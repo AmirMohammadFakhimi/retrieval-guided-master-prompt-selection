@@ -641,7 +641,7 @@ def prepare_semantic_retrieval(
     return cast(LanceTable, table), query_vectors
 
 
-def _semantic_candidates(
+def _get_semantic_candidate_page(
         semantic_table: LanceTable,
         query_vector: np.ndarray,
         limit: int,
@@ -674,125 +674,79 @@ def _semantic_candidates(
     return candidates
 
 
-def _spread_after_increment(counts: Counter[Any], categories: tuple[Any, ...], selected_category: Any) -> int:
-    """Return the category-count spread after one hypothetical selection."""
-
-    updated_counts = counts.copy()
-    updated_counts[selected_category] += 1
-    return (
-        max(updated_counts[category] for category in categories)
-        - min(updated_counts[category] for category in categories)
-    )
-
-
-def _preserves_balance(
-        candidate: Mapping[str, Any],
-        profession_counts: Counter[str],
-        gender_counts: Counter[str],
-        cell_counts: Counter[tuple[str, str]],
-        professions: tuple[str, ...],
-        genders: tuple[str, ...],
-        cells: tuple[tuple[str, str], ...],
-) -> bool:
-    """Return whether adding a candidate keeps every count spread at most one."""
-
-    profession = str(candidate[Column.PROFESSION])
-    gender = str(candidate[Column.GENDER])
-    cell = (profession, gender)
-    return (
-            _spread_after_increment(
-                profession_counts,
-                professions,
-                profession,
-            ) <= 1
-            and _spread_after_increment(
-        gender_counts,
-        genders,
-        gender,
-    ) <= 1
-            and _spread_after_increment(
-        cell_counts,
-        cells,
-        cell,
-    ) <= 1
-    )
-
-
-def _balanced_semantic_candidates(
+def _get_balanced_semantic_candidates(
         semantic_table: LanceTable,
         query_vector: np.ndarray,
         k: int,
         cells: tuple[tuple[str, str], ...],
 ) -> list[dict[str, Any]]:
-    """Select the nearest candidates whose prefixes stay maximally balanced."""
+    """Select the nearest candidates while keeping all group counts balanced."""
 
     if not cells:
         raise ValueError('Balanced semantic retrieval requires training cells')
 
     professions = tuple(sorted({profession for profession, _ in cells}))
     genders = tuple(sorted({gender for _, gender in cells}))
-    profession_counts: Counter[str] = Counter()
-    gender_counts: Counter[str] = Counter()
-    cell_counts: Counter[tuple[str, str]] = Counter()
-    candidates: list[dict[str, Any]] = []
-    selected_indices: set[int] = set()
+
+    profession_counts = Counter()
+    gender_counts = Counter()
+    cell_counts = Counter()
+
+    unselected_candidates: list[dict[str, Any]] = []
     selected: list[dict[str, Any]] = []
 
     row_count = semantic_table.count_rows()
     offset = 0
     page_size = max(32, 8 * k)
+
     while len(selected) < k:
-        selected_index = next(
+        minimum_profession_count = min(profession_counts[profession] for profession in professions)
+        minimum_gender_count = min(gender_counts[gender] for gender in genders)
+        minimum_cell_count = min(cell_counts[cell] for cell in cells)
+
+        first_eligible_index = next(
             (
                 index
-                for index, candidate in enumerate(candidates)
-                if (
-                    index not in selected_indices
-                    and _preserves_balance(
-                candidate,
-                profession_counts,
-                gender_counts,
-                cell_counts,
-                professions,
-                genders,
-                cells,
-            )
-            )
+                for index, candidate in enumerate(unselected_candidates)
+                if profession_counts[candidate[Column.PROFESSION]] == minimum_profession_count
+                   and gender_counts[candidate[Column.GENDER]] == minimum_gender_count
+                   and cell_counts[(candidate[Column.PROFESSION], candidate[Column.GENDER])] == minimum_cell_count
             ),
             None,
         )
-        if selected_index is not None:
-            candidate = candidates[selected_index]
-            selected_indices.add(selected_index)
-            selected.append(candidate)
-            profession = str(candidate[Column.PROFESSION])
-            gender = str(candidate[Column.GENDER])
-            profession_counts[profession] += 1
-            gender_counts[gender] += 1
-            cell_counts[(profession, gender)] += 1
+
+        if first_eligible_index is None:
+            if offset >= row_count:
+                break
+
+            page = _get_semantic_candidate_page(
+                semantic_table,
+                query_vector,
+                limit=min(page_size, row_count - offset),
+                offset=offset,
+            )
+            if not page:
+                break
+
+            unselected_candidates.extend(page)
+            offset += len(page)
+            page_size *= 2
             continue
 
-        if offset >= row_count:
-            break
+        candidate = unselected_candidates.pop(first_eligible_index)
+        profession = candidate[Column.PROFESSION]
+        gender = candidate[Column.GENDER]
 
-        page_limit = min(page_size, row_count - offset)
-        page = _semantic_candidates(
-            semantic_table,
-            query_vector,
-            page_limit,
-            offset,
-        )
-        if not page:
-            break
-        candidates.extend(page)
-        offset += len(page)
-        page_size *= 2
+        selected.append(candidate)
+        profession_counts[profession] += 1
+        gender_counts[gender] += 1
+        cell_counts[(profession, gender)] += 1
 
     if len(selected) != k:
         raise RuntimeError(
-            f'Could not select {k} balanced semantic examples after scanning '
-            f'{offset} of {row_count} training rows'
+            f'Could not select {k} balanced semantic examples after scanning {offset} of {row_count} training rows'
         )
+
     return selected
 
 
@@ -806,31 +760,20 @@ def retrieve_examples(
     """Retrieve exact semantic or relevance-first balanced examples."""
 
     if method not in RETRIEVAL_METHODS:
-        raise ValueError(
-            f'Unknown retrieval method {method!r}; expected one of '
-            f'{sorted(RETRIEVAL_METHODS)}'
-        )
+        raise ValueError(f'Unknown retrieval method {method!r}; expected one of {sorted(RETRIEVAL_METHODS)}')
 
     row_count = semantic_table.count_rows()
     if k > row_count:
-        raise ValueError(
-            f'Cannot retrieve {k} examples from {row_count} training rows'
-        )
+        raise ValueError(f'Cannot retrieve {k} examples from {row_count} training rows')
 
     if method == 'semantic':
-        candidates = _semantic_candidates(semantic_table, query_vector, k)
+        candidates = _get_semantic_candidate_page(semantic_table, query_vector, k)
         if len(candidates) != k:
-            raise RuntimeError(
-                f'LanceDB returned {len(candidates)} candidates; expected {k}'
-            )
+            raise RuntimeError(f'LanceDB returned {len(candidates)} candidates; expected {k}'
+                               )
         return candidates
 
-    return _balanced_semantic_candidates(
-        semantic_table,
-        query_vector,
-        k,
-        cells,
-    )
+    return _get_balanced_semantic_candidates(semantic_table, query_vector, k, cells)
 
 
 def order_examples(

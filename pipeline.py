@@ -56,6 +56,7 @@ PROFESSIONS = [
 ]
 GENDERS = ('male', 'female')
 RETRIEVAL_METHODS = frozenset({'semantic', 'balanced_semantic'})
+EXAMPLE_ORDERS = frozenset({'as_retrieved', 'reverse', 'shuffle'})
 LANCEDB_INGEST_BATCH_SIZE = 2048
 EMBEDDING_DTYPES = {
     'float32': torch.float32,
@@ -279,10 +280,15 @@ def validate_config(config: dict[str, Any]) -> None:
             'retrieval.embedding_models cannot contain duplicate IDs'
         )
 
-    allowed_orders = {'as_retrieved', 'reverse', 'shuffle'}
-    orders = list(retrieval['example_orders'])
-    if not orders or set(orders) - allowed_orders:
-        raise ValueError('retrieval.example_orders must use as_retrieved, reverse, or shuffle')
+    orders = retrieval['example_orders']
+    if not isinstance(orders, list) or not orders:
+        raise ValueError('retrieval.example_orders must be a non-empty list')
+    unknown_orders = sorted(set(orders) - EXAMPLE_ORDERS)
+    if unknown_orders:
+        raise ValueError(
+            f'Unknown example orders {unknown_orders}; expected values '
+            f'from {sorted(EXAMPLE_ORDERS)}'
+        )
     if len(orders) != len(set(orders)):
         raise ValueError('retrieval.example_orders cannot contain duplicates')
 
@@ -769,8 +775,7 @@ def retrieve_examples(
     if method == 'semantic':
         candidates = _get_semantic_candidate_page(semantic_table, query_vector, k)
         if len(candidates) != k:
-            raise RuntimeError(f'LanceDB returned {len(candidates)} candidates; expected {k}'
-                               )
+            raise RuntimeError(f'LanceDB returned {len(candidates)} candidates; expected {k}')
         return candidates
 
     return _get_balanced_semantic_candidates(semantic_table, query_vector, k, cells)
@@ -780,27 +785,27 @@ def order_examples(
         examples: list[dict[str, Any]],
         order: str,
         seed: int,
-        query_id: str,
-        order_seed_key: str,
 ) -> list[dict[str, Any]]:
     """Apply the configured demonstration order after retrieval."""
 
-    ordered = list(examples)
+    if order not in EXAMPLE_ORDERS:
+        raise ValueError(f'Unknown example order {order!r}; expected one of {sorted(EXAMPLE_ORDERS)}')
+
     if order == 'as_retrieved':
-        return ordered
+        return examples
+
     if order == 'reverse':
-        return list(reversed(ordered))
+        return examples[::-1]
+
     if order == 'shuffle':
         return sorted(
-            ordered,
+            examples,
             key=lambda example: hashlib.sha256(
-                (
-                    f'{seed}:{query_id}:{order_seed_key}:'
-                    f'{example[Column.ID]}:order'
-                ).encode()
-            ).hexdigest(),
+                f'{seed}:{example[Column.ID]}'.encode()
+            ).digest(),
         )
-    raise ValueError('example order must be as_retrieved, reverse, or shuffle')
+
+    raise RuntimeError(f'Example order {order!r} is allowed but not implemented')
 
 
 def build_prompt(
@@ -1594,10 +1599,6 @@ def run_experiment(
                 examples,
                 str(setting['example_order']),
                 seed,
-                str(query[Column.ID]),
-                (
-                    f'{target}|{retrieval_method}|{embedding_model_id}'
-                ),
             )
             prompt = build_prompt(
                 query,

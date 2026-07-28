@@ -1,0 +1,17 @@
+numpy==2.5.1
+pandas==3.0.5
+pandas-stubs==3.0.3.260530
+PyYAML==6.0.3
+beautifulsoup4==4.15.0
+ftfy==6.3.1
+scikit-learn==1.9.0
+datasets==5.0.1
+sentence-transformers==5.6.1
+lancedb==0.34.0
+torch==2.13.0
+transformers==5.14.1
+tqdm==4.70.0
+matplotlib==3.11.1
+gradio==6.20.0
+ipykernel==7.3.0
+ipython==9.15.0

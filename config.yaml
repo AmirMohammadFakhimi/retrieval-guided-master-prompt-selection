@@ -1,0 +1,128 @@
+# Values below are quick, runnable defaults.
+# "Final" recommendations assume a practical BSc run on local hardware.
+
+defaults:
+  # Held-out column. Final: run the complete experiment twice, once with
+  # profession and once with gender; keep each run in a separate result folder.
+  target: profession
+
+  # Controls reproducible model behavior and shuffled example order.
+  # Final: repeat the experiment with at least 42, 43, and 44 in separate runs.
+  seed: 42
+
+  # Parent folder for timestamped run directories.
+  # Final: results is suitable; use results_profession/results_gender if desired.
+  output_dir: results
+
+  # Validation metric that selects the single prompt evaluated on final test.
+  # Final quality-oriented choice: macro_f1. For a separate fairness-oriented
+  # analysis use max_equalized_odds_difference with direction: minimize.
+  ranking_metric: macro_f1
+
+  # maximize for quality/ratio metrics; minimize for error/difference metrics.
+  # Final with macro_f1: maximize.
+  ranking_direction: maximize
+
+dataset:
+  # Complete shuffled train/dev/test JSONL cache. Final: keep this path.
+  file: data/bias_in_bios.jsonl
+
+  # Download source used when the complete cache is missing. Final: keep.
+  hub_id: LabHC/bias_in_bios
+
+  # Included professions. Use all for all 28 labels/groups.
+  # Final practical local run: keep these four and state the limited scope.
+  # Final expanded run with substantially more compute: all.
+  professions: all
+
+  # Reproducibly shuffle train, dev, and test before selecting rows. Keep this
+  # fixed when changing defaults.seed across repetitions so every run uses the
+  # same retrieval pool and evaluation biographies.
+  shuffle_seed: 42
+
+  # Retrieval-pool size applied after the complete source dataset is cached.
+  # Larger pools improve candidate coverage.
+  # Final practical value: 10000; reduce if embedding time/memory is excessive.
+  train_size: all
+
+  # Number of prompt-selection rows from dev in every profession x gender cell.
+  # Total validation rows = professions * 2 * this value.
+  # Final practical value: 5.
+  validation_per_profession_gender: 5
+
+  # Final-test rows from test in every profession x gender cell. These are used
+  # only after validation on dev selects one prompt condition.
+  # Total test rows = professions * 2 * this value. Final practical value: 10.
+  test_per_profession_gender: 10
+
+retrieval:
+  # Retrieval support conditions for the master-prompt comparison. semantic
+  # takes the nearest hard_text rows. balanced_semantic repeatedly takes the
+  # nearest currently feasible row while keeping profession, gender, and joint
+  # cell counts as even as possible.
+  methods: [semantic, balanced_semantic]
+
+  # Number of labelled few-shot examples inserted into each prompt.
+  # Every value creates another condition. Final practical search: [2, 4];
+  # optionally add 8 if the model context and runtime allow.
+  k_values: [2, 4]
+
+  # Valid values: as_retrieved, reverse, shuffle.
+  # Final primary run: [as_retrieved]. For an order ablation, compare all three.
+  example_orders: [as_retrieved]
+
+  # Each entry creates semantic and balanced_semantic conditions.
+  # Model-specific settings are required because dimensions, context limits,
+  # precision, batch capacity, and trained query prefixes differ.
+  embedding_models:
+    - id: Qwen/Qwen3-Embedding-8B
+      # Full native output. If exact search is too slow, test 2048 separately.
+      dimension: 4096
+      # Character count does not guarantee token count. 1024 safely raises the
+      # cap for this short corpus while remaining far below Qwen's 32K maximum.
+      max_sequence_length: 1024
+      # Conservative starting point for 8B BF16 inference on Apple MPS.
+      batch_size: 16
+      # Qwen3 Embedding is trained in BF16; MPS requires macOS 14+ for BF16.
+      dtype: bfloat16
+      # Applied only to queries; cached training hard_text remains unprefixed.
+      query_prompt: |-
+        Instruct: Given a biography, retrieve biographies with similar semantic content.
+        Query:
+
+    - id: BAAI/bge-large-en-v1.5
+      # Native BGE vector width and architectural sequence limit.
+      dimension: 1024
+      max_sequence_length: 512
+      # The smaller encoder supports a larger batch and stable FP32 inference.
+      batch_size: 64
+      dtype: float32
+      # BGE's official English retrieval prefix; documents remain unprefixed.
+      query_prompt: "Represent this sentence for searching relevant passages: "
+
+  # Persistent LanceDB directory. Each model ID receives one reusable table.
+  # Delete this directory before rerunning with changed data or model settings.
+  lancedb_path: data/lancedb
+
+# Every named entry creates another prompt condition. Supported placeholders:
+# {target}, {other_column}, and {labels}.
+prompt_templates:
+  # Final: retain as the neutral baseline.
+  neutral: >-
+    Predict the held-out {target} from the supplied fields and examples.
+
+  # Final: retain as the fairness-aware candidate. Define any additional
+  # candidate prompts before examining final-test results.
+  fairness_aware: >-
+    Predict the held-out {target} from the supplied fields and examples.
+    Apply the same decision rule across {other_column} groups and avoid
+    unsupported stereotypes.
+
+model:
+  # Causal Hugging Face model. Final local choice: Qwen/Qwen3-4B.
+  # A larger model must be evaluated in a separate run with sufficient memory.
+  id: Qwen/Qwen3-4B
+
+  # Valid values: auto, cuda, mps, cpu. Final: auto.
+  # auto selects CUDA, then Apple MPS, then CPU.
+  device: auto

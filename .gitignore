@@ -1,0 +1,63 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Python environments and build artifacts
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+build/
+dist/
+*.egg-info/
+
+# JetBrains IDEs (PyCharm, DataSpell, IntelliJ IDEA, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100/
+.Trashes/
+.fseventsd/
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+
+# Linux desktop and filesystem metadata
+*~
+.fuse_hidden*
+.directory
+.Trash-*/
+.nfs*
+
+# Generated project data and experiment outputs
+data/bias_in_bios.jsonl
+data/lancedb/
+results/
+results_profession/
+results_gender/

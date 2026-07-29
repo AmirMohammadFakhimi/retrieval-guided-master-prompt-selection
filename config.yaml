@@ -119,9 +119,27 @@ prompt_templates:
     unsupported stereotypes.
 
 model:
-  # Causal Hugging Face model. Final local choice: Qwen/Qwen3-4B.
-  # A larger model must be evaluated in a separate run with sufficient memory.
-  id: Qwen/Qwen3-4B
+  # Every entry creates a separate language-model condition. Models are loaded
+  # and released one at a time so their weights are never resident together.
+  # This precision is separate from each retrieval embedding model's dtype.
+  language_models:
+    - id: Qwen/Qwen3.6-27B
+      dtype: bfloat16
+
+    - id: Qwen/Qwen3.5-27B
+      dtype: bfloat16
+
+    - id: Qwen/Qwen3.6-35B-A3B
+      dtype: bfloat16
+
+    - id: google/gemma-4-31B-it
+      dtype: bfloat16
+
+    # Use openai/gpt-oss-20b during development and this 120B model for final
+    # inference. auto preserves native MXFP4 only on a supported backend; the
+    # generic Transformers MPS path on Apple Silicon cannot run MXFP4.
+    - id: openai/gpt-oss-120b
+      dtype: auto
 
   # Valid values: auto, cuda, mps, cpu. Final: auto.
   # auto selects CUDA, then Apple MPS, then CPU.

@@ -23,7 +23,13 @@ from lancedb.table import LanceTable
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics import cohen_kappa_score, matthews_corrcoef
 from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForMultimodalLM,
+    AutoTokenizer,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+)
 
 PROFESSIONS = [
     'accountant',
@@ -59,11 +65,12 @@ GENDERS = ('male', 'female')
 RETRIEVAL_METHODS = frozenset({'semantic', 'balanced_semantic'})
 EXAMPLE_ORDERS = frozenset({'as_retrieved', 'reverse', 'shuffle'})
 LANCEDB_INGEST_BATCH_SIZE = 2048
-EMBEDDING_DTYPES = {
+TORCH_DTYPES = {
     'float32': torch.float32,
     'float16': torch.float16,
     'bfloat16': torch.bfloat16,
 }
+LANGUAGE_MODEL_DTYPES = frozenset({*TORCH_DTYPES, 'auto'})
 
 
 class SemanticResource(TypedDict):
@@ -185,6 +192,7 @@ def validate_config(config: dict[str, Any]) -> None:
     train_size = train_size_limit(config)
     defaults = config['defaults']
     retrieval = config['retrieval']
+    model_settings = config['model']
 
     if defaults['seed'] < 0:
         raise ValueError('defaults.seed must be non-negative')
@@ -196,6 +204,35 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError('dataset.test_per_profession_gender must be at least 1')
     if config['dataset']['shuffle_seed'] < 0:
         raise ValueError('dataset.shuffle_seed must be non-negative')
+    language_models = model_settings['language_models']
+    if not isinstance(language_models, list) or not language_models:
+        raise ValueError('model.language_models must contain at least one model')
+    language_model_ids: list[str] = []
+    for index, language_model in enumerate(language_models):
+        if not isinstance(language_model, dict):
+            raise ValueError(
+                f'model.language_models[{index}] must be a mapping'
+            )
+        missing_settings = sorted({'id', 'dtype'} - set(language_model))
+        if missing_settings:
+            raise ValueError(
+                f'model.language_models[{index}] is missing: '
+                f'{missing_settings}'
+            )
+        model_id = str(language_model['id']).strip()
+        if not model_id:
+            raise ValueError(
+                f'model.language_models[{index}].id cannot be empty'
+            )
+        language_model_ids.append(model_id)
+        if language_model['dtype'] not in LANGUAGE_MODEL_DTYPES:
+            allowed_dtypes = ', '.join(sorted(LANGUAGE_MODEL_DTYPES))
+            raise ValueError(
+                f'model.language_models[{index}].dtype must be one of: '
+                f'{allowed_dtypes}'
+            )
+    if len(language_model_ids) != len(set(language_model_ids)):
+        raise ValueError('model.language_models cannot contain duplicate IDs')
 
     methods = retrieval['methods']
     if not isinstance(methods, list) or not methods:
@@ -265,8 +302,8 @@ def validate_config(config: dict[str, Any]) -> None:
                     f'retrieval.embedding_models[{index}].{setting} '
                     'must be a positive integer'
                 )
-        if embedding_model['dtype'] not in EMBEDDING_DTYPES:
-            allowed_dtypes = ', '.join(EMBEDDING_DTYPES)
+        if embedding_model['dtype'] not in TORCH_DTYPES:
+            allowed_dtypes = ', '.join(TORCH_DTYPES)
             raise ValueError(
                 f'retrieval.embedding_models[{index}].dtype must be '
                 f'one of: {allowed_dtypes}'
@@ -546,7 +583,7 @@ def prepare_semantic_retrieval(
     encoder = SentenceTransformer(
         model_name,
         device=device,
-        model_kwargs={'dtype': EMBEDDING_DTYPES[dtype_name]},
+        model_kwargs={'dtype': TORCH_DTYPES[dtype_name]},
         truncate_dim=embedding_dimension,
     )
     encoder.max_seq_length = max_sequence_length
@@ -866,18 +903,49 @@ def build_prompt(
     return '\n\n'.join(sections)
 
 
-def load_language_model(model_id: str, device: str) -> tuple[Any, Any]:
-    """Load one local Hugging Face causal language model."""
+def load_language_model(
+        model_id: str,
+        device: str,
+        dtype_name: str,
+) -> tuple[PreTrainedTokenizerBase, PreTrainedModel]:
+    """Load one causal or multimodal Hugging Face language model."""
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    dtype = torch.float32 if device == 'cpu' else torch.float16
-    model = AutoModelForCausalLM.from_pretrained(model_id, dtype=dtype)
+    tokenizer = cast(
+        PreTrainedTokenizerBase,
+        cast(object, AutoTokenizer.from_pretrained(model_id)),
+    )
+    dtype: str | torch.dtype = (
+        'auto' if dtype_name == 'auto' else TORCH_DTYPES[dtype_name]
+    )
+    try:
+        loaded_model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            dtype=dtype,
+        )
+    except ValueError:
+        loaded_model = AutoModelForMultimodalLM.from_pretrained(
+            model_id,
+            dtype=dtype,
+        )
+    model = cast(PreTrainedModel, loaded_model)
+
     model.to(device)
     model.eval()
+
     return tokenizer, model
 
 
-def _format_model_input(prompt: str, tokenizer: Any) -> str:
+def clear_model_memory(device: str) -> None:
+    """Collect released model objects and clear the active accelerator cache."""
+
+    gc.collect()
+    if device == 'cuda':
+        torch.cuda.empty_cache()
+    elif device == 'mps':
+        torch.mps.empty_cache()
+
+
+def _format_model_input(prompt: str, tokenizer: PreTrainedTokenizerBase) -> str:
     """Apply the model's chat wrapper before scoring allowed labels."""
 
     if getattr(tokenizer, 'chat_template', None):
@@ -899,8 +967,8 @@ def _format_model_input(prompt: str, tokenizer: Any) -> str:
 def score_allowed_labels(
         prompt: str,
         labels: list[str],
-        tokenizer: Any,
-        model: Any,
+        tokenizer: PreTrainedTokenizerBase,
+        model: PreTrainedModel,
         device: str,
 ) -> tuple[str, dict[str, float]]:
     """Choose among allowed labels using mean conditional token log-probability.
@@ -1371,7 +1439,8 @@ def _plot_results(
     ).reset_index(drop=True)
     labels = [
         (
-            f'{row.retrieval}, embedding={row.embedding_model}, '
+            f'model={row.model}, {row.retrieval}, '
+            f'embedding={row.embedding_model}, '
             f'k={row.k}, {row.prompt_name}, {row.example_order}'
         )
         for row in plot_frame.itertuples(index=False)
@@ -1467,35 +1536,39 @@ def _build_conditions(
         target: Column,
         methods: list[str],
         embedding_models: list[dict[str, Any]],
+        language_models: list[dict[str, Any]],
         k_values: list[int],
         example_orders: list[str],
         prompt_templates: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    """Cross every semantic retrieval method with every embedding model."""
+    """Build the full cross-product of configured experiment conditions."""
 
     conditions: list[dict[str, Any]] = []
-    for method in methods:
-        for embedding_model in embedding_models:
-            embedding_model_id = str(embedding_model['id'])
-            for k in k_values:
-                for example_order in example_orders:
-                    for prompt_name, master_prompt in prompt_templates.items():
-                        condition = (
-                            f'{target} | {method} | '
-                            f'embedding={embedding_model_id} | k={k} | '
-                            f'{example_order} | {prompt_name}'
-                        )
-                        conditions.append(
-                            {
-                                'condition': condition,
-                                'retrieval': method,
-                                'embedding_model': embedding_model_id,
-                                'k': k,
-                                'example_order': example_order,
-                                'prompt_name': prompt_name,
-                                'master_prompt': master_prompt,
-                            }
-                        )
+    for language_model in language_models:
+        language_model_id = str(language_model['id'])
+        for method in methods:
+            for embedding_model in embedding_models:
+                embedding_model_id = str(embedding_model['id'])
+                for k in k_values:
+                    for example_order in example_orders:
+                        for prompt_name, master_prompt in prompt_templates.items():
+                            condition = (
+                                f'{target} | model={language_model_id} | '
+                                f'{method} | embedding={embedding_model_id} | '
+                                f'k={k} | {example_order} | {prompt_name}'
+                            )
+                            conditions.append(
+                                {
+                                    'condition': condition,
+                                    'retrieval': method,
+                                    'embedding_model': embedding_model_id,
+                                    'k': k,
+                                    'example_order': example_order,
+                                    'prompt_name': prompt_name,
+                                    'master_prompt': master_prompt,
+                                    'model': language_model_id,
+                                }
+                            )
     return conditions
 
 
@@ -1515,7 +1588,12 @@ def run_experiment(
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    device = choose_device(config['model']['device'])
+    model_settings = config['model']
+    language_models = [
+        dict(settings)
+        for settings in model_settings['language_models']
+    ]
+    device = choose_device(model_settings['device'])
     progress(f'Using device: {device}')
     progress(
         f'Holding out {target}; model input is hard_text + {audit_column}'
@@ -1554,7 +1632,6 @@ def run_experiment(
             'test_vectors': evaluation_vectors[len(validation):],
         }
 
-    tokenizer, model = load_language_model(config['model']['id'], device)
     k_values = [int(value) for value in config['retrieval']['k_values']]
     example_orders = list(config['retrieval']['example_orders'])
     prompt_templates = dict(config['prompt_templates'])
@@ -1569,6 +1646,7 @@ def run_experiment(
         target,
         methods,
         embedding_models,
+        language_models,
         k_values,
         example_orders,
         prompt_templates,
@@ -1583,6 +1661,8 @@ def run_experiment(
             setting: Mapping[str, Any],
             queries: list[dict[str, Any]],
             evaluation_split: str,
+            tokenizer: PreTrainedTokenizerBase,
+            language_model: PreTrainedModel,
     ) -> list[dict[str, Any]]:
         """Predict every row for one prompt condition and one data split."""
 
@@ -1626,7 +1706,7 @@ def run_experiment(
                 prompt,
                 labels,
                 tokenizer,
-                model,
+                language_model,
                 device,
             )
             rows.append(
@@ -1649,7 +1729,7 @@ def run_experiment(
                     'example_order': setting['example_order'],
                     'prompt_name': setting['prompt_name'],
                     'master_prompt': setting['master_prompt'],
-                    'model': config['model']['id'],
+                    'model': setting['model'],
                     'device': device,
                     'seed': seed,
                     'example_ids': json.dumps(
@@ -1674,18 +1754,44 @@ def run_experiment(
         return rows
 
     validation_prediction_rows: list[dict[str, Any]] = []
-    for condition_number, setting in enumerate(conditions, start=1):
+    condition_number = 0
+    for model_number, language_model_settings in enumerate(
+            language_models, start=1
+    ):
+        language_model_id = str(language_model_settings['id'])
         progress(
-            f'[{condition_number}/{len(conditions)}] validation: '
-            f'{setting['condition']}'
+            f'Loading language model [{model_number}/{len(language_models)}]: '
+            f'{language_model_id}'
         )
-        validation_prediction_rows.extend(
-            generate_condition_predictions(
-                setting,
-                validation,
-                'validation',
-            )
+        tokenizer, language_model = load_language_model(
+            language_model_id,
+            device,
+            str(language_model_settings['dtype']),
         )
+        try:
+            model_conditions = [
+                setting
+                for setting in conditions
+                if setting['model'] == language_model_id
+            ]
+            for setting in model_conditions:
+                condition_number += 1
+                progress(
+                    f'[{condition_number}/{len(conditions)}] validation: '
+                    f'{setting['condition']}'
+                )
+                validation_prediction_rows.extend(
+                    generate_condition_predictions(
+                        setting,
+                        validation,
+                        'validation',
+                        tokenizer,
+                        language_model,
+                    )
+                )
+        finally:
+            del tokenizer, language_model
+            clear_model_memory(device)
 
     validation_predictions = pd.DataFrame(validation_prediction_rows)
     (
@@ -1708,15 +1814,32 @@ def run_experiment(
         for setting in conditions
         if setting['condition'] == best_validation['condition']
     )
-
-    progress(f'Final test: {selected_setting['condition']}')
-    test_predictions = pd.DataFrame(
-        generate_condition_predictions(
-            selected_setting,
-            test,
-            'test',
-        )
+    selected_model_settings = next(
+        settings
+        for settings in language_models
+        if settings['id'] == selected_setting['model']
     )
+
+    progress(f'Loading selected language model: {selected_setting['model']}')
+    tokenizer, language_model = load_language_model(
+        str(selected_model_settings['id']),
+        device,
+        str(selected_model_settings['dtype']),
+    )
+    try:
+        progress(f'Final test: {selected_setting['condition']}')
+        test_predictions = pd.DataFrame(
+            generate_condition_predictions(
+                selected_setting,
+                test,
+                'test',
+                tokenizer,
+                language_model,
+            )
+        )
+    finally:
+        del tokenizer, language_model
+        clear_model_memory(device)
     (
         results,
         test_class_metrics,

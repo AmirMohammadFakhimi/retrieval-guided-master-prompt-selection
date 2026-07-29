@@ -23,6 +23,7 @@ from lancedb.table import LanceTable
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics import cohen_kappa_score, matthews_corrcoef
 from tqdm.auto import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 PROFESSIONS = [
     'accountant',
@@ -507,16 +508,6 @@ def load_data(config: dict[str, Any], project_root: Path) -> tuple[
     return train, validation, test, counts
 
 
-def render_input(row: dict[str, Any], target: Column) -> str:
-    """Render hard_text plus the non-target structured column."""
-
-    other_column = TARGET_TO_OTHER_COLUMN[target]
-    return (
-        f'Hard text: {row[Column.HARD_TEXT]}\n'
-        f'{other_column.value.replace('_', ' ').title()}: {row[other_column]}'
-    )
-
-
 def prepare_semantic_retrieval(
         train: list[dict[str, Any]],
         queries: list[dict[str, Any]],
@@ -808,51 +799,75 @@ def order_examples(
     raise RuntimeError(f'Example order {order!r} is allowed but not implemented')
 
 
+def display_column_name(column: Column | str) -> str:
+    """Return a human-readable name for a dataset column used in prompts."""
+
+    return str(column).replace('_', ' ').title()
+
+
+def render_input(row: dict[str, Any], target: Column) -> str:
+    """Render the biography plus the non-target structured column."""
+
+    other_column = TARGET_TO_OTHER_COLUMN[target]
+    return (
+        f'Biography: {row[Column.HARD_TEXT]}\n'
+        f'{display_column_name(other_column)}: {row[other_column]}'
+    )
+
+
 def build_prompt(
-        query: Mapping[str, Any],
+        query: dict[str, Any],
         examples: list[dict[str, Any]],
         target: Column,
         labels: list[str],
         master_prompt: str,
 ) -> str:
-    """Build master instruction + labelled examples + target-free query."""
+    """Build master instruction + labeled examples + target-free query."""
 
+    # Rows must contain decoded class names from load_data, not raw numeric IDs.
     other_column = TARGET_TO_OTHER_COLUMN[target]
+    target_name = display_column_name(target)
+    other_column_name = display_column_name(other_column)
+    labels_text = ', '.join(labels)
     try:
-        instruction = str(master_prompt).format(
-            target=target,
-            other_column=other_column,
-            labels=', '.join(labels),
+        instruction = master_prompt.format(
+            target=target_name,
+            other_column=other_column_name,
+            labels=labels_text,
         )
     except KeyError as exc:
-        raise ValueError(
-            'Prompt templates may use only {target}, {other_column}, and {labels}'
-        ) from exc
+        raise ValueError(f'Prompt templates may use only {target}, {other_column}, and {labels}') from exc
 
-    parts = [
-        instruction,
-        f'Target column: {target}.',
-        f'Allowed labels: {', '.join(labels)}.',
-        'Return exactly one allowed label and no explanation.',
-    ]
+    instruction_block = (
+        f'{instruction}\n'
+        f'Allowed values for {target_name}: {labels_text}.\n'
+        'Output exactly one allowed value and no explanation.'
+    )
+
+    example_blocks = []
     for number, example in enumerate(examples, start=1):
-        parts.append(
+        example_blocks.append(
             f'Example {number}:\n'
             f'{render_input(example, target)}\n'
-            f'Answer ({target}): {example[target]}'
+            f'{target_name}: {example[target]}'
         )
-    parts.append(
+
+    query_block = (
         'Query:\n'
         f'{render_input(query, target)}\n'
-        f'Answer ({target}):'
+        f'{target_name}:'
     )
-    return '\n\n'.join(parts)
+
+    sections = [instruction_block]
+    if example_blocks:
+        sections.append(f'Examples:\n{'\n\n'.join(example_blocks)}')
+    sections.append(query_block)
+
+    return '\n\n'.join(sections)
 
 
 def load_language_model(model_id: str, device: str) -> tuple[Any, Any]:
     """Load one local Hugging Face causal language model."""
-
-    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     dtype = torch.float32 if device == 'cpu' else torch.float16
@@ -1423,8 +1438,8 @@ def _write_best_prompt(
     """Save the validation-selected prompt and final-test score in plain text."""
 
     resolved_prompt = str(prompt_templates[best['prompt_name']]).format(
-        target=best['target'],
-        other_column=best['audit_column'],
+        target=display_column_name(best['target']),
+        other_column=display_column_name(best['audit_column']),
         labels=', '.join(labels),
     )
     text = (

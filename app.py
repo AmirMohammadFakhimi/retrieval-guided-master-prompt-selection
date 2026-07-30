@@ -100,6 +100,9 @@ The YAML below is the single source of settings.
 - Every `model.language_models` entry creates a separate language-model
   condition. The pipeline loads and releases them sequentially to control
   memory use.
+- The master prompt and output constraints form the system message. Retrieved
+  examples become user/assistant demonstrations, and the evaluation biography
+  is the final user message rendered by each model's native chat template.
 - Qwen uses a 1024-token cap, while BGE retains its architectural 512-token
   maximum. Both receive their own trained query prefix; cached training
   biographies remain raw `hard_text`.

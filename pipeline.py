@@ -858,8 +858,8 @@ def build_prompt(
         target: Column,
         labels: list[str],
         master_prompt: str,
-) -> str:
-    """Build master instruction + labeled examples + target-free query."""
+) -> list[dict[str, str]]:
+    """Build a structured chat with demonstrations and a target-free query."""
 
     # Rows must contain decoded class names from load_data, not raw numeric IDs.
     other_column = TARGET_TO_OTHER_COLUMN[target]
@@ -881,33 +881,21 @@ def build_prompt(
         'Output exactly one allowed value and no explanation.'
     )
 
-    example_blocks = []
-    for number, example in enumerate(examples, start=1):
-        example_blocks.append(
-            f'Example {number}:\n'
-            f'{render_input(example, target)}\n'
-            f'{target_name}: {example[target]}'
-        )
-
-    query_block = (
-        'Query:\n'
-        f'{render_input(query, target)}\n'
-        f'{target_name}:'
+    messages = [
+        {'role': 'system', 'content': instruction_block}
+    ]
+    for example in examples:
+        messages.extend([
+            {'role': 'user', 'content': render_input(example, target)},
+            {'role': 'assistant', 'content': example[target]},
+        ])
+    messages.append(
+        {'role': 'user', 'content': render_input(query, target)}
     )
-
-    sections = [instruction_block]
-    if example_blocks:
-        sections.append(f'Examples:\n{'\n\n'.join(example_blocks)}')
-    sections.append(query_block)
-
-    return '\n\n'.join(sections)
+    return messages
 
 
-def load_language_model(
-        model_id: str,
-        device: str,
-        dtype_name: str,
-) -> tuple[PreTrainedTokenizerBase, PreTrainedModel]:
+def load_language_model(model_id: str, device: str, dtype_name: str) -> tuple[PreTrainedTokenizerBase, PreTrainedModel]:
     """Load one causal or multimodal Hugging Face language model."""
 
     tokenizer = cast(
@@ -917,17 +905,11 @@ def load_language_model(
     dtype: str | torch.dtype = (
         'auto' if dtype_name == 'auto' else TORCH_DTYPES[dtype_name]
     )
+
     try:
-        loaded_model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            dtype=dtype,
-        )
+        model = AutoModelForCausalLM.from_pretrained(model_id, dtype=dtype)
     except ValueError:
-        loaded_model = AutoModelForMultimodalLM.from_pretrained(
-            model_id,
-            dtype=dtype,
-        )
-    model = cast(PreTrainedModel, loaded_model)
+        model = AutoModelForMultimodalLM.from_pretrained(model_id, dtype=dtype)
 
     model.to(device)
     model.eval()
@@ -945,27 +927,37 @@ def clear_model_memory(device: str) -> None:
         torch.mps.empty_cache()
 
 
-def _format_model_input(prompt: str, tokenizer: PreTrainedTokenizerBase) -> str:
-    """Apply the model's chat wrapper before scoring allowed labels."""
+def _apply_chat_template(messages: list[dict[str, str]], tokenizer: PreTrainedTokenizerBase) -> torch.Tensor:
+    """Render structured messages directly as one unpadded token sequence."""
 
-    if getattr(tokenizer, 'chat_template', None):
-        messages = [{'role': 'user', 'content': prompt}]
-        try:
-            return tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=False,
-            )
-        except TypeError:
-            return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-    return prompt
+    if not getattr(tokenizer, 'chat_template', None):
+        raise ValueError(
+            f'{tokenizer.name_or_path} must provide a chat template for this experiment'
+        )
+
+    encoded = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        return_dict=True,
+        return_tensors='pt',
+        add_generation_prompt=False,
+        enable_thinking=False,
+    )
+
+    if not isinstance(encoded, dict):
+        raise TypeError('The chat template must return a token mapping')
+
+    input_ids = encoded['input_ids']
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise RuntimeError(
+            f'The chat template returned input_ids with shape {tuple(input_ids.shape)}; expected (1, sequence_length)'
+        )
+
+    return input_ids[0]
 
 
 def score_allowed_labels(
-        prompt: str,
+        messages: list[dict[str, str]],
         labels: list[str],
         tokenizer: PreTrainedTokenizerBase,
         model: PreTrainedModel,
@@ -973,19 +965,22 @@ def score_allowed_labels(
 ) -> tuple[str, dict[str, float]]:
     """Choose among allowed labels using mean conditional token log-probability.
 
-    Each canonical label is scored as a continuation of the formatted model
-    input. Mean rather than summed log-probability reduces the automatic
-    disadvantage of labels that use more tokenizer tokens. Labels are evaluated
-    sequentially to keep accelerator memory small.
+    Each label is rendered as the final assistant message. Comparing that
+    rendering with an empty assistant message isolates the exact model-specific
+    assistant prefix, label tokens, and end markers. Mean rather than summed
+    log-probability reduces the automatic disadvantage of labels that use more
+    tokenizer tokens. Labels are evaluated sequentially to keep accelerator
+    memory small.
     """
 
     if not labels:
         raise ValueError('At least one allowed label is required')
 
-    model_input = _format_model_input(prompt, tokenizer)
-    prompt_ids = tokenizer(model_input, return_tensors='pt')['input_ids'][0]
-    if prompt_ids.numel() == 0:
-        raise ValueError('The formatted prompt produced no tokens')
+    empty_answer_ids = _apply_chat_template(
+        [*messages, {'role': 'assistant', 'content': ''}],
+        tokenizer,
+    )
+    empty_token_ids: list[int] = empty_answer_ids.tolist()
 
     try:
         forward_parameters = inspect.signature(model.forward).parameters
@@ -994,16 +989,55 @@ def score_allowed_labels(
     supports_limited_logits = 'logits_to_keep' in forward_parameters
 
     scores: dict[str, float] = {}
+    reference_prompt_ids: torch.Tensor | None = None
     for label in labels:
-        # The leading space is part of the candidate continuation after
-        # 'Answer (...):' and is applied equally to every allowed label.
-        candidate_ids = tokenizer(
-            f' {label}',
-            add_special_tokens=False,
-            return_tensors='pt',
-        )['input_ids'][0]
+        full_answer_ids = _apply_chat_template(
+            [*messages, {'role': 'assistant', 'content': label}],
+            tokenizer,
+        )
+        full_token_ids: list[int] = full_answer_ids.tolist()
+
+        prefix_length = 0
+        shared_length = min(len(empty_token_ids), len(full_token_ids))
+        while (
+                prefix_length < shared_length
+                and empty_token_ids[prefix_length]
+                == full_token_ids[prefix_length]
+        ):
+            prefix_length += 1
+
+        suffix_length = 0
+        while (
+                suffix_length < len(empty_token_ids) - prefix_length
+                and suffix_length < len(full_token_ids) - prefix_length
+                and empty_token_ids[-1 - suffix_length]
+                == full_token_ids[-1 - suffix_length]
+        ):
+            suffix_length += 1
+
+        if prefix_length + suffix_length != len(empty_token_ids):
+            raise RuntimeError(
+                f'{tokenizer.name_or_path} does not expose an unambiguous '
+                'assistant-content span through its chat template'
+            )
+
+        candidate_stop = (
+            len(full_token_ids) - suffix_length
+            if suffix_length
+            else len(full_token_ids)
+        )
+        prompt_ids = full_answer_ids[:prefix_length]
+        candidate_ids = full_answer_ids[prefix_length:candidate_stop]
+        if prompt_ids.numel() == 0:
+            raise ValueError('The formatted chat produced no prompt tokens')
         if candidate_ids.numel() == 0:
             raise ValueError(f'Allowed label {label!r} produced no tokens')
+        if reference_prompt_ids is None:
+            reference_prompt_ids = prompt_ids
+        elif not torch.equal(reference_prompt_ids, prompt_ids):
+            raise RuntimeError(
+                'The chat template produced label-dependent prompt tokens'
+            )
 
         full_ids = torch.cat((prompt_ids, candidate_ids)).unsqueeze(0).to(device)
         attention_mask = torch.ones_like(full_ids)
@@ -1526,8 +1560,9 @@ def _write_best_prompt(
         f'Model: {best['model']}\n\n'
         'Resolved master prompt:\n'
         f'{resolved_prompt}\n\n'
-        'The complete prompt also contains the retrieved examples, allowed labels, '
-        'and each evaluation query; those are saved in predictions.csv.\n'
+        'The complete structured chat also contains the retrieved examples, '
+        'allowed labels, and each evaluation query; those messages are saved '
+        'as JSON in predictions.csv.\n'
     )
     path.write_text(text, encoding='utf-8')
 
@@ -1695,7 +1730,7 @@ def run_experiment(
                 str(setting['example_order']),
                 seed,
             )
-            prompt = build_prompt(
+            messages = build_prompt(
                 query,
                 examples,
                 target,
@@ -1703,7 +1738,7 @@ def run_experiment(
                 str(setting['master_prompt']),
             )
             predicted_label, label_scores = score_allowed_labels(
-                prompt,
+                messages,
                 labels,
                 tokenizer,
                 language_model,
@@ -1747,7 +1782,7 @@ def run_experiment(
                     'example_scores': json.dumps(
                         [example['retrieval_score'] for example in examples]
                     ),
-                    'prompt': prompt,
+                    'prompt': json.dumps(messages, ensure_ascii=False),
                     'label_scores': json.dumps(label_scores, sort_keys=True),
                 }
             )

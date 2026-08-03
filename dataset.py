@@ -53,7 +53,7 @@ class Column(StrEnum):
     GENDER = 'gender'
 
 
-TARGET_TO_OTHER_COLUMN = {
+TARGET_TO_AUDIT_COLUMN = {
     Column.PROFESSION: Column.GENDER,
     Column.GENDER: Column.PROFESSION,
 }
@@ -70,11 +70,11 @@ HTML_MARKUP_PATTERN = re.compile(
 
 
 def task_settings(config: dict[str, Any]) -> tuple[Column, Column, list[str], list[str]]:
-    """Return target, visible structured column, professions, and target labels."""
+    """Return target, audit column, professions, and target labels."""
 
     try:
         target = Column(config['defaults']['target'])
-        other_column = TARGET_TO_OTHER_COLUMN[target]
+        audit_column = TARGET_TO_AUDIT_COLUMN[target]
     except (KeyError, ValueError) as exc:
         raise ValueError('defaults.target must be profession or gender') from exc
 
@@ -101,7 +101,7 @@ def task_settings(config: dict[str, Any]) -> tuple[Column, Column, list[str], li
         raise ValueError('dataset.professions cannot contain duplicates')
 
     target_labels = professions if target is Column.PROFESSION else list(GENDERS)
-    return target, other_column, professions, target_labels
+    return target, audit_column, professions, target_labels
 
 
 def train_size_limit(config: dict[str, Any]) -> int | None:

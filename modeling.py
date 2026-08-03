@@ -13,7 +13,7 @@ from lancedb.table import LanceTable
 from sentence_transformers import SentenceTransformer
 from tqdm.auto import tqdm
 from transformers import (
-    AutoModelForCausalLM,
+    AutoModelForCausalLM as AutoCausalLanguageModel,
     AutoTokenizer,
     PreTrainedModel,
     PreTrainedTokenizerBase,
@@ -21,7 +21,7 @@ from transformers import (
 
 from dataset import (
     Column,
-    TARGET_TO_OTHER_COLUMN,
+    TARGET_TO_AUDIT_COLUMN,
     display_column_name,
 )
 
@@ -33,7 +33,7 @@ TORCH_DTYPES = {
     'float16': torch.float16,
     'bfloat16': torch.bfloat16,
 }
-LLM_DTYPES = frozenset({*TORCH_DTYPES, 'auto'})
+LANGUAGE_MODEL_DTYPES = frozenset({*TORCH_DTYPES, 'auto'})
 
 
 class SemanticResource(TypedDict):
@@ -48,7 +48,7 @@ def choose_device(requested: str = 'auto') -> str:
     """Choose CUDA, then Apple MPS, then CPU."""
 
     if requested not in {'auto', 'cuda', 'mps', 'cpu'}:
-        raise ValueError('llm.device must be auto, cuda, mps, or cpu')
+        raise ValueError('inference.device must be auto, cuda, mps, or cpu')
 
     if requested == 'auto':
         if torch.cuda.is_available():
@@ -353,12 +353,12 @@ def order_examples(
 
 
 def render_input(row: dict[str, Any], target: Column) -> str:
-    """Render the biography plus the non-target structured column."""
+    """Render the biography plus the audit column."""
 
-    other_column = TARGET_TO_OTHER_COLUMN[target]
+    audit_column = TARGET_TO_AUDIT_COLUMN[target]
     return (
         f'Biography: {row[Column.HARD_TEXT]}\n'
-        f'{display_column_name(other_column)}: {row[other_column]}'
+        f'{display_column_name(audit_column)}: {row[audit_column]}'
     )
 
 
@@ -372,18 +372,18 @@ def build_prompt(
     """Build a structured chat with demonstrations and a target-free query."""
 
     # Rows must contain decoded class names from load_data, not raw numeric IDs.
-    other_column = TARGET_TO_OTHER_COLUMN[target]
+    audit_column = TARGET_TO_AUDIT_COLUMN[target]
     target_name = display_column_name(target)
-    other_column_name = display_column_name(other_column)
+    audit_column_name = display_column_name(audit_column)
     labels_text = ', '.join(labels)
     try:
         instruction = master_prompt.format(
             target=target_name,
-            other_column=other_column_name,
+            audit_column=audit_column_name,
             labels=labels_text,
         )
     except KeyError as exc:
-        raise ValueError(f'Prompt templates may use only {target}, {other_column}, and {labels}') from exc
+        raise ValueError(f'Prompt templates may use only {target}, {audit_column}, and {labels}') from exc
 
     instruction_block = (
         f'{instruction}\n'
@@ -405,30 +405,30 @@ def build_prompt(
     return messages
 
 
-def load_llm(
-        llm_id: str,
+def load_language_model(
+        language_model_id: str,
         revision: str,
         device: str,
         dtype_name: str,
 ) -> tuple[PreTrainedTokenizerBase, PreTrainedModel]:
-    """Load one causal Hugging Face LLM."""
+    """Load one causal Hugging Face language model."""
 
     tokenizer = cast(
         PreTrainedTokenizerBase,
-        cast(object, AutoTokenizer.from_pretrained(llm_id, revision=revision)),
+        cast(object, AutoTokenizer.from_pretrained(language_model_id, revision=revision)),
     )
 
     dtype: str | torch.dtype = 'auto' if dtype_name == 'auto' else TORCH_DTYPES[dtype_name]
-    llm = AutoModelForCausalLM.from_pretrained(llm_id, revision=revision, dtype=dtype)
+    language_model = AutoCausalLanguageModel.from_pretrained(language_model_id, revision=revision, dtype=dtype)
 
-    llm.to(device)
-    llm.eval()
+    language_model.to(device)
+    language_model.eval()
 
-    return tokenizer, llm
+    return tokenizer, language_model
 
 
-def clear_llm_memory(device: str) -> None:
-    """Collect released LLM objects and clear the active accelerator cache."""
+def clear_language_model_memory(device: str) -> None:
+    """Collect released language model objects and clear the active accelerator cache."""
 
     gc.collect()
     if device == 'cuda':
@@ -468,17 +468,17 @@ def score_allowed_labels(
         messages: list[dict[str, str]],
         labels: list[str],
         tokenizer: PreTrainedTokenizerBase,
-        llm: PreTrainedModel,
+        language_model: PreTrainedModel,
         device: str,
 ) -> tuple[str, dict[str, float]]:
     """Choose among allowed labels using mean conditional token log-probability.
 
     Each label is rendered as the final assistant message. Comparing that
-    rendering with an empty assistant message isolates the exact LLM-specific
-    assistant prefix, label tokens, and end markers. Mean rather than summed
-    log-probability reduces the automatic disadvantage of labels that use more
-    tokenizer tokens. Labels are evaluated sequentially to keep accelerator
-    memory small.
+    rendering with an empty assistant message isolates the exact
+    language-model-specific assistant prefix, label tokens, and end markers.
+    Mean rather than summed log-probability reduces the automatic disadvantage
+    of labels that use more tokenizer tokens. Labels are evaluated sequentially
+    to keep accelerator memory small.
     """
 
     if not labels:
@@ -542,11 +542,11 @@ def score_allowed_labels(
         with torch.inference_mode():
             # Omitting the final candidate token leaves exactly the C logits
             # that predict the C candidate tokens.
-            output = llm(input_ids=scoring_ids, use_cache=False, logits_to_keep=candidate_ids.numel())
+            output = language_model(input_ids=scoring_ids, use_cache=False, logits_to_keep=candidate_ids.numel())
             candidate_logits = output.logits[0]
 
             if candidate_logits.shape[0] != candidate_ids.numel():
-                raise RuntimeError(f'Could not align LLM logits for allowed label {label}')
+                raise RuntimeError(f'Could not align language model logits for allowed label {label}')
 
             token_log_probabilities = torch.log_softmax(candidate_logits.float(), dim=-1)
             candidate_on_device = candidate_ids.to(device)
@@ -556,7 +556,7 @@ def score_allowed_labels(
             score = selected_token_log_probabilities.mean().item()
 
         if not np.isfinite(score):
-            raise RuntimeError(f'LLM returned a non-finite score for allowed label {label}')
+            raise RuntimeError(f'Language model returned a non-finite score for allowed label {label}')
         scores[label] = score
 
     predicted_label = max(labels, key=lambda label: scores[label])

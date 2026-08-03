@@ -31,7 +31,7 @@ def validate_config(config: dict[str, Any]) -> None:
     train_size = dataset.train_size_limit(config)
     defaults = config['defaults']
     retrieval = config['retrieval']
-    llm_settings = config['llm']
+    inference_settings = config['inference']
 
     if defaults['seed'] < 0:
         raise ValueError('defaults.seed must be non-negative')
@@ -43,37 +43,30 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError('dataset.test_per_profession_gender must be at least 1')
     if config['dataset']['shuffle_seed'] < 0:
         raise ValueError('dataset.shuffle_seed must be non-negative')
-    llm_configs = llm_settings['llms']
-    if not isinstance(llm_configs, list) or not llm_configs:
-        raise ValueError('llm.llms must contain at least one LLM')
+    language_model_configs = inference_settings['language_models']
+    if not isinstance(language_model_configs, list) or not language_model_configs:
+        raise ValueError('inference.language_models must contain at least one language model')
 
-    llm_ids: list[str] = []
-    for index, llm_config in enumerate(llm_configs):
-        if not isinstance(llm_config, dict):
-            raise ValueError(f'llm.llms[{index}] must be a dict')
+    language_model_ids: list[str] = []
+    for index, language_model_config in enumerate(language_model_configs):
+        if not isinstance(language_model_config, dict):
+            raise ValueError(f'inference.language_models[{index}] must be a dict')
 
-        missing_settings = sorted({'id', 'revision', 'dtype'} - set(llm_config))
+        missing_settings = sorted({'id', 'revision', 'dtype'} - set(language_model_config))
         if missing_settings:
-            raise ValueError(
-                f'llm.llms[{index}] is missing: '
-                f'{missing_settings}'
-            )
+            raise ValueError(f'inference.language_models[{index}] is missing: {missing_settings}')
 
-        llm_id = llm_config['id']
-        if not llm_id:
-            raise ValueError(
-                f'llm.llms[{index}].id cannot be empty'
-            )
-        llm_ids.append(llm_id)
-        if not llm_config['revision']:
-            raise ValueError(f'llm.llms[{index}].revision cannot be empty')
-        if llm_config['dtype'] not in modeling.LLM_DTYPES:
-            allowed_dtypes = ', '.join(sorted(modeling.LLM_DTYPES))
-            raise ValueError(
-                f'llm.llms[{index}].dtype must be one of: {allowed_dtypes}'
-            )
-    if len(llm_ids) != len(set(llm_ids)):
-        raise ValueError('llm.llms cannot contain duplicate IDs')
+        language_model_id = language_model_config['id']
+        if not language_model_id:
+            raise ValueError(f'inference.language_models[{index}].id cannot be empty')
+        language_model_ids.append(language_model_id)
+        if not language_model_config['revision']:
+            raise ValueError(f'inference.language_models[{index}].revision cannot be empty')
+        if language_model_config['dtype'] not in modeling.LANGUAGE_MODEL_DTYPES:
+            allowed_dtypes = ', '.join(sorted(modeling.LANGUAGE_MODEL_DTYPES))
+            raise ValueError(f'inference.language_models[{index}].dtype must be one of: {allowed_dtypes}')
+    if len(language_model_ids) != len(set(language_model_ids)):
+        raise ValueError('inference.language_models cannot contain duplicate IDs')
 
     methods = retrieval['methods']
     if not isinstance(methods, list) or not methods:
@@ -152,7 +145,7 @@ def _build_conditions(
         target: dataset.Column,
         methods: list[str],
         embedding_models: list[dict[str, Any]],
-        llm_configs: list[dict[str, Any]],
+        language_model_configs: list[dict[str, Any]],
         example_counts: list[int],
         example_orders: list[str],
         prompt_templates: dict[str, Any],
@@ -160,31 +153,30 @@ def _build_conditions(
     """Build the full cross-product of configured experiment conditions."""
 
     conditions: list[dict[str, Any]] = []
-    for llm_config in llm_configs:
-        llm_id = llm_config['id']
+    for language_model_config in language_model_configs:
+        language_model_id = language_model_config['id']
         for method in methods:
             for embedding_model in embedding_models:
                 embedding_model_id = embedding_model['id']
                 for example_count in example_counts:
                     for example_order in example_orders:
                         for prompt_name, master_prompt in prompt_templates.items():
-                            condition = (
-                                f'{target} | llm={llm_id} | '
+                            condition_name = (
+                                f'{target} | language_model={language_model_id} | '
                                 f'{method} | embedding={embedding_model_id} | '
                                 f'examples={example_count} | {example_order} | {prompt_name}'
                             )
-                            conditions.append(
-                                {
-                                    'condition': condition,
-                                    'retrieval': method,
-                                    'embedding_model': embedding_model_id,
-                                    'example_count': example_count,
-                                    'example_order': example_order,
-                                    'prompt_name': prompt_name,
-                                    'master_prompt': master_prompt,
-                                    'llm': llm_id,
-                                }
-                            )
+
+                            conditions.append({
+                                'condition': condition_name,
+                                'language_model': language_model_id,
+                                'retrieval': method,
+                                'embedding_model': embedding_model_id,
+                                'example_count': example_count,
+                                'example_order': example_order,
+                                'prompt_name': prompt_name,
+                                'master_prompt': master_prompt,
+                            })
     return conditions
 
 
@@ -200,18 +192,19 @@ def run_experiment(
     defaults = config['defaults']
     seed = defaults['seed']
     target, audit_column, _, labels = dataset.task_settings(config)
+
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    llm_settings = config['llm']
-    llm_configs = [
+    inference_settings = config['inference']
+    language_model_configs = [
         dict(settings)
-        for settings in llm_settings['llms']
+        for settings in inference_settings['language_models']
     ]
-    device = modeling.choose_device(llm_settings['device'])
+    device = modeling.choose_device(inference_settings['device'])
     progress(f'Using device: {device}')
     progress(
-        f'Holding out {target}; LLM input is hard_text + {audit_column}'
+        f'Holding out {target}; language model input is hard_text + {audit_column}'
     )
     train, validation, test, dataset_counts = dataset.load_data(config, root)
     progress(
@@ -261,7 +254,7 @@ def run_experiment(
         target,
         methods,
         embedding_models,
-        llm_configs,
+        language_model_configs,
         example_counts,
         example_orders,
         prompt_templates,
@@ -277,7 +270,7 @@ def run_experiment(
             queries: list[dict[str, Any]],
             evaluation_split: str,
             tokenizer: PreTrainedTokenizerBase,
-            llm: PreTrainedModel,
+            language_model: PreTrainedModel,
     ) -> list[dict[str, Any]]:
         """Predict every row for one prompt condition and one data split."""
 
@@ -321,7 +314,7 @@ def run_experiment(
                 messages,
                 labels,
                 tokenizer,
-                llm,
+                language_model,
                 device,
             )
             rows.append(
@@ -344,7 +337,7 @@ def run_experiment(
                     'example_order': setting['example_order'],
                     'prompt_name': setting['prompt_name'],
                     'master_prompt': setting['master_prompt'],
-                    'llm': setting['llm'],
+                    'language_model': setting['language_model'],
                     'device': device,
                     'seed': seed,
                     'example_ids': json.dumps(
@@ -370,27 +363,28 @@ def run_experiment(
 
     validation_prediction_rows: list[dict[str, Any]] = []
     condition_number = 0
-    for llm_number, llm_config in enumerate(
-            llm_configs, start=1
+    for language_model_number, language_model_config in enumerate(
+            language_model_configs, start=1
     ):
-        llm_id = llm_config['id']
+        language_model_id = language_model_config['id']
         progress(
-            f'Loading LLM [{llm_number}/{len(llm_configs)}]: '
-            f'{llm_id}'
+            f'Loading language model '
+            f'[{language_model_number}/{len(language_model_configs)}]: '
+            f'{language_model_id}'
         )
-        tokenizer, llm = modeling.load_llm(
-            llm_id,
-            llm_config['revision'],
+        tokenizer, language_model = modeling.load_language_model(
+            language_model_id,
+            language_model_config['revision'],
             device,
-            llm_config['dtype'],
+            language_model_config['dtype'],
         )
         try:
-            llm_conditions = [
+            language_model_conditions = [
                 setting
                 for setting in conditions
-                if setting['llm'] == llm_id
+                if setting['language_model'] == language_model_id
             ]
-            for setting in llm_conditions:
+            for setting in language_model_conditions:
                 condition_number += 1
                 progress(
                     f'[{condition_number}/{len(conditions)}] validation: '
@@ -402,12 +396,12 @@ def run_experiment(
                         validation,
                         'validation',
                         tokenizer,
-                        llm,
+                        language_model,
                     )
                 )
         finally:
-            del tokenizer, llm
-            modeling.clear_llm_memory(device)
+            del tokenizer, language_model
+            modeling.clear_language_model_memory(device)
 
     validation_predictions = pd.DataFrame(validation_prediction_rows)
     (
@@ -432,26 +426,27 @@ def run_experiment(
     conditions_by_name = {
         setting['condition']: setting for setting in conditions
     }
-    selected_by_llm = {
-        row['llm']: row
+    selected_by_language_model = {
+        row['language_model']: row
         for row in selected_validation.to_dict('records')
     }
     test_prediction_rows: list[dict[str, Any]] = []
-    for llm_number, llm_config in enumerate(
-            llm_configs, start=1
+    for language_model_number, language_model_config in enumerate(
+            language_model_configs, start=1
     ):
-        llm_id = llm_config['id']
-        best_validation = selected_by_llm[llm_id]
+        language_model_id = language_model_config['id']
+        best_validation = selected_by_language_model[language_model_id]
         selected_setting = conditions_by_name[best_validation['condition']]
         progress(
-            f'Loading selected LLM '
-            f'[{llm_number}/{len(llm_configs)}]: {llm_id}'
+            f'Loading selected language model '
+            f'[{language_model_number}/{len(language_model_configs)}]: '
+            f'{language_model_id}'
         )
-        tokenizer, llm = modeling.load_llm(
-            llm_id,
-            llm_config['revision'],
+        tokenizer, language_model = modeling.load_language_model(
+            language_model_id,
+            language_model_config['revision'],
             device,
-            llm_config['dtype'],
+            language_model_config['dtype'],
         )
         try:
             progress(f'Final test: {selected_setting['condition']}')
@@ -461,12 +456,12 @@ def run_experiment(
                     test,
                     'test',
                     tokenizer,
-                    llm,
+                    language_model,
                 )
             )
         finally:
-            del tokenizer, llm
-            modeling.clear_llm_memory(device)
+            del tokenizer, language_model
+            modeling.clear_language_model_memory(device)
     test_predictions = pd.DataFrame(test_prediction_rows)
     (
         results,
@@ -479,8 +474,8 @@ def run_experiment(
     results.insert(
         1,
         'validation_selection_score',
-        results['llm'].map(
-            selected_validation.set_index('llm')[defaults['ranking_metric']]
+        results['language_model'].map(
+            selected_validation.set_index('language_model')[defaults['ranking_metric']]
         ),
     )
 

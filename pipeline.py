@@ -1,5 +1,5 @@
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -50,7 +50,7 @@ def validate_config(config: dict[str, Any]) -> None:
     llm_ids: list[str] = []
     for index, llm_config in enumerate(llm_configs):
         if not isinstance(llm_config, dict):
-            raise ValueError(f'llm.llms[{index}] must be a mapping')
+            raise ValueError(f'llm.llms[{index}] must be a dict')
 
         missing_settings = sorted({'id', 'revision', 'dtype'} - set(llm_config))
         if missing_settings:
@@ -109,7 +109,7 @@ def validate_config(config: dict[str, Any]) -> None:
     embedding_model_ids: list[str] = []
     for index, embedding_model in enumerate(embedding_models):
         if not isinstance(embedding_model, dict):
-            raise ValueError(f'retrieval.embedding_models[{index}] must be a mapping')
+            raise ValueError(f'retrieval.embedding_models[{index}] must be a dict')
         missing_settings = sorted(required_embedding_settings - set(embedding_model))
         if missing_settings:
             raise ValueError(f'retrieval.embedding_models[{index}] is missing: {missing_settings}')
@@ -155,7 +155,7 @@ def _build_conditions(
         llm_configs: list[dict[str, Any]],
         example_counts: list[int],
         example_orders: list[str],
-        prompt_templates: Mapping[str, Any],
+        prompt_templates: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Build the full cross-product of configured experiment conditions."""
 
@@ -273,7 +273,7 @@ def run_experiment(
     ] = {}
 
     def generate_condition_predictions(
-            setting: Mapping[str, Any],
+            setting: dict[str, Any],
             queries: list[dict[str, Any]],
             evaluation_split: str,
             tokenizer: PreTrainedTokenizerBase,

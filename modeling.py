@@ -453,7 +453,7 @@ def _apply_chat_template(messages: list[dict[str, str]], tokenizer: PreTrainedTo
     )
 
     if not isinstance(encoded, dict):
-        raise TypeError('The chat template must return a token mapping')
+        raise TypeError('The chat template must return a token dict')
 
     input_ids = encoded['input_ids']
     if input_ids.ndim != 2 or input_ids.shape[0] != 1:

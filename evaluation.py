@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -362,7 +361,7 @@ def plot_results(
 def write_best_prompts(
         path: Path,
         selected: pd.DataFrame,
-        prompt_templates: Mapping[str, Any],
+        prompt_templates: dict[str, Any],
         labels: list[str],
         ranking_metric: str,
         ranking_direction: str,

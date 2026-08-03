@@ -20,40 +20,73 @@ def run_from_yaml(config_text: str):
         if not isinstance(config, dict):
             raise ValueError("The configuration must be a YAML mapping")
         output = run_experiment(config, PROJECT_ROOT, print)
-        selected = output["validation_results"].iloc[0]
-        final = output["results"].iloc[0]
+        best_prompts_path = output["best_prompts"]
+        validation_results_frame = output["validation_results"]
+        selected = validation_results_frame.loc[
+            validation_results_frame["selected_for_test"].astype(bool)
+        ].copy()
+        final = output["results"].copy()
         ranking_metric = config["defaults"]["ranking_metric"]
+        configured_models = [entry["id"] for entry in config["model"]["language_models"]]
+        if (
+            len(selected) != len(configured_models)
+            or selected["model"].nunique() != len(configured_models)
+            or set(selected["model"]) != set(configured_models)
+        ):
+            raise ValueError("Expected exactly one validation-selected condition per model")
+        if (
+            len(final) != len(configured_models)
+            or final["model"].nunique() != len(configured_models)
+            or set(final["model"]) != set(configured_models)
+        ):
+            raise ValueError("Expected exactly one independent final-test result per model")
+
         prediction_columns = [
             "evaluation_split",
             "query_id",
             "true_label",
             "audit_group",
             "predicted_label",
+            "condition",
             "retrieval",
             "embedding_model",
             "model",
             "k",
+            "example_order",
             "prompt_name",
             "label_scores",
         ]
         predictions = output["predictions"]
+        selected_conditions = selected["condition"].tolist()
         selected_test_predictions = predictions.loc[
             predictions["evaluation_split"].eq("test")
-            & predictions["condition"].eq(selected["condition"]),
+            & predictions["condition"].isin(selected_conditions),
             prediction_columns,
         ]
-        status = (
-            f"Finished. Results: `{output['run_dir']}`  \n"
-            f"Selected on validation `{ranking_metric}`: "
-            f"**{selected['condition']}** "
-            f"(validation: `{selected[ranking_metric]}`, "
-            f"final test: `{final[ranking_metric]}`)  \n"
-            f"Selected prompt file: `{output['best_prompt']}`"
+        selection_lines = []
+        for model_id in configured_models:
+            selected_row = selected.loc[selected["model"].eq(model_id)].iloc[0]
+            final_row = final.loc[final["model"].eq(model_id)].iloc[0]
+            selection_lines.append(
+                f"- **{model_id}**: "
+                f"`{selected_row['condition']}` — validation "
+                f"`{ranking_metric}={selected_row[ranking_metric]}`; final test "
+                f"`{ranking_metric}={final_row[ranking_metric]}`"
+            )
+        status = "\n".join(
+            [
+                f"Finished. Results: `{output['run_dir']}`  ",
+                f"One validation winner per model on `{ranking_metric}`:",
+                "",
+                *selection_lines,
+                "",
+                f"Selected prompts file: `{best_prompts_path}`",
+            ]
         )
         return (
             status,
-            output["validation_results"],
-            output["results"],
+            validation_results_frame,
+            final,
             output["class_metrics"],
             output["fairness_metrics"],
             output["group_metrics"],
@@ -85,8 +118,9 @@ The YAML below is the single source of settings.
 - `dataset.shuffle_seed` reproducibly shuffles the official `train`, `dev`, and
   `test` splits before row selection. Keep it fixed across experiment seeds.
 - Every language model × retrieval method × embedding model × `k` × example
-  order × master prompt is a validation condition on `dev`. Only the selected
-  condition runs on final `test` rows.
+  order × master prompt is a validation condition on `dev`. Validation selects
+  one winner **within each language model**; those winners alone run on final
+  `test` rows.
 - `validation_per_profession_gender` is the main search-runtime multiplier.
   `test_per_profession_gender` controls the independent final evaluation.
   The thesis defaults are 5 validation and 10 test rows per cell.
@@ -98,25 +132,25 @@ The YAML below is the single source of settings.
 - Every `embedding_models` entry creates separate `semantic` and
   `balanced_semantic` conditions.
 - Every `model.language_models` entry creates a separate language-model
-  condition. The pipeline loads and releases them sequentially to control
-  memory use.
+  condition. The pipeline loads and releases Hugging Face models sequentially.
 - The master prompt and output constraints form the system message. Retrieved
   examples become user/assistant demonstrations, and the evaluation biography
   is the final user message rendered by each model's native chat template.
 - Qwen uses a 1024-token cap, while BGE retains its architectural 512-token
   maximum. Both receive their own trained query prefix; cached training
   biographies remain raw `hard_text`.
-- Each model ID owns one readable reusable LanceDB table. Delete
+- Each embedding-model ID owns one readable reusable LanceDB table. Delete
   `data/lancedb/` before changing data or embedding settings.
-- The model scores every allowed label and chooses the largest mean token
-  log-probability. These scores rank labels; they are not calibrated
-  probabilities. Runtime grows with the number of allowed labels; sequential
-  scoring keeps accelerator memory practical.
-- The selected-test-predictions tab shows every allowed-label log-score.
+- The model scores every allowed label and chooses the largest mean conditional
+  token log-probability. These scores rank labels; they are not calibrated
+  probabilities.
+- The selected-test-predictions tab shows allowed-label log-scores for every
+  model's validation-selected condition.
 - `ranking_metric: macro_f1` with `maximize` is the quality-oriented default.
   To rank by a disparity such as `max_equalized_odds_difference`, use
   `ranking_direction: minimize`.
-- `device: auto` chooses CUDA, then Apple MPS, then CPU.
+- `device: mps` requires Apple GPU support and fails instead of falling back to
+  CPU for these large models.
 
 Key formulas:
 
@@ -155,11 +189,11 @@ README explains every setting, metric, denominator, and interpretation.
         with gr.Tabs():
             with gr.Tab("Prompt selection and final test"):
                 validation_results = gr.Dataframe(
-                    label="Validation conditions; selected_for_test identifies the chosen row",
+                    label="Validation conditions; selected_for_test marks one winner per model",
                     interactive=False,
                 )
                 results = gr.Dataframe(
-                    label="Independent final-test result for the selected condition",
+                    label="Independent final-test result for each model's selected condition",
                     interactive=False,
                 )
             with gr.Tab("Metric details"):
@@ -181,7 +215,7 @@ README explains every setting, metric, denominator, and interpretation.
                 )
             with gr.Tab("Selected test predictions"):
                 predictions = gr.Dataframe(
-                    label="Final-test labels and scores for the selected prompt",
+                    label="Final-test labels and scores for all selected model conditions",
                     interactive=False,
                 )
             with gr.Tab("Data and plot"):

@@ -6,15 +6,14 @@ defaults:
   # profession and once with gender; keep each run in a separate result folder.
   target: profession
 
-  # Controls reproducible model behavior and shuffled example order.
-  # Final: repeat the experiment with at least 42, 43, and 44 in separate runs.
+  # Controls deterministic example ordering. Label scoring does not sample.
   seed: 42
 
   # Parent folder for timestamped run directories.
   # Final: results is suitable; use results_profession/results_gender if desired.
   output_dir: results
 
-  # Validation metric that selects the single prompt evaluated on final test.
+  # Validation metric that selects one prompt per model for final test.
   # Final quality-oriented choice: macro_f1. For a separate fairness-oriented
   # analysis use max_equalized_odds_difference with direction: minimize.
   ranking_metric: macro_f1
@@ -36,8 +35,7 @@ dataset:
   professions: all
 
   # Reproducibly shuffle train, dev, and test before selecting rows. Keep this
-  # fixed when changing defaults.seed across repetitions so every run uses the
-  # same retrieval pool and evaluation biographies.
+  # fixed so every model sees the same retrieval pool and evaluation rows.
   shuffle_seed: 42
 
   # Retrieval-pool size applied after the complete source dataset is cached.
@@ -124,23 +122,21 @@ model:
   # This precision is separate from each retrieval embedding model's dtype.
   language_models:
     - id: Qwen/Qwen3.6-27B
+      revision: 6a9e13bd6fc8f0983b9b99948120bc37f49c13e9
       dtype: bfloat16
 
     - id: Qwen/Qwen3.5-27B
+      revision: fc05daec18b0a78c049392ed2e771dde82bdf654
       dtype: bfloat16
 
     - id: Qwen/Qwen3.6-35B-A3B
+      revision: 995ad96eacd98c81ed38be0c5b274b04031597b0
       dtype: bfloat16
 
     - id: google/gemma-4-31B-it
+      revision: 842da3794eaa0b77d5f08bae87a17459d91ff475
       dtype: bfloat16
 
-    # Use openai/gpt-oss-20b during development and this 120B model for final
-    # inference. auto preserves native MXFP4 only on a supported backend; the
-    # generic Transformers MPS path on Apple Silicon cannot run MXFP4.
-    - id: openai/gpt-oss-120b
-      dtype: auto
-
-  # Valid values: auto, cuda, mps, cpu. Final: auto.
-  # auto selects CUDA, then Apple MPS, then CPU.
-  device: auto
+  # This local experiment targets the Apple GPU. Use auto only when CPU
+  # fallback is genuinely acceptable.
+  device: mps

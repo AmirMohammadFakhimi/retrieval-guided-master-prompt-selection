@@ -1,7 +1,7 @@
 import gc
-import hashlib
 import inspect
 import json
+import random
 import re
 import shlex
 from collections import Counter
@@ -207,29 +207,31 @@ def validate_config(config: dict[str, Any]) -> None:
     language_models = model_settings['language_models']
     if not isinstance(language_models, list) or not language_models:
         raise ValueError('model.language_models must contain at least one model')
+
     language_model_ids: list[str] = []
     for index, language_model in enumerate(language_models):
         if not isinstance(language_model, dict):
-            raise ValueError(
-                f'model.language_models[{index}] must be a mapping'
-            )
-        missing_settings = sorted({'id', 'dtype'} - set(language_model))
+            raise ValueError(f'model.language_models[{index}] must be a mapping')
+
+        missing_settings = sorted({'id', 'revision', 'dtype'} - set(language_model))
         if missing_settings:
             raise ValueError(
                 f'model.language_models[{index}] is missing: '
                 f'{missing_settings}'
             )
-        model_id = str(language_model['id']).strip()
+
+        model_id = language_model['id']
         if not model_id:
             raise ValueError(
                 f'model.language_models[{index}].id cannot be empty'
             )
         language_model_ids.append(model_id)
+        if not language_model['revision']:
+            raise ValueError(f'model.language_models[{index}].revision cannot be empty')
         if language_model['dtype'] not in LANGUAGE_MODEL_DTYPES:
             allowed_dtypes = ', '.join(sorted(LANGUAGE_MODEL_DTYPES))
             raise ValueError(
-                f'model.language_models[{index}].dtype must be one of: '
-                f'{allowed_dtypes}'
+                f'model.language_models[{index}].dtype must be one of: {allowed_dtypes}'
             )
     if len(language_model_ids) != len(set(language_model_ids)):
         raise ValueError('model.language_models cannot contain duplicate IDs')
@@ -240,8 +242,7 @@ def validate_config(config: dict[str, Any]) -> None:
     unknown_methods = sorted(set(methods) - RETRIEVAL_METHODS)
     if unknown_methods:
         raise ValueError(
-            f'Unknown retrieval methods {unknown_methods}; expected values '
-            f'from {sorted(RETRIEVAL_METHODS)}'
+            f'Unknown retrieval methods {unknown_methods}; expected values from {sorted(RETRIEVAL_METHODS)}'
         )
     if len(methods) != len(set(methods)):
         raise ValueError('retrieval.methods cannot contain duplicates')
@@ -252,13 +253,12 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError('Every retrieval.k_values entry must be <= dataset.train_size')
     if len(k_values) != len(set(k_values)):
         raise ValueError('retrieval.k_values cannot contain duplicates')
-    if not str(retrieval['lancedb_path']).strip():
+    if not str(retrieval['lancedb_path']):
         raise ValueError('retrieval.lancedb_path cannot be empty')
+
     embedding_models = retrieval['embedding_models']
     if not isinstance(embedding_models, list) or not embedding_models:
-        raise ValueError(
-            'retrieval.embedding_models must contain at least one model'
-        )
+        raise ValueError('retrieval.embedding_models must contain at least one model')
     required_embedding_settings = {
         'id',
         'dimension',
@@ -270,63 +270,32 @@ def validate_config(config: dict[str, Any]) -> None:
     embedding_model_ids: list[str] = []
     for index, embedding_model in enumerate(embedding_models):
         if not isinstance(embedding_model, dict):
-            raise ValueError(
-                f'retrieval.embedding_models[{index}] must be a mapping'
-            )
-        missing_settings = sorted(
-            required_embedding_settings - set(embedding_model)
-        )
+            raise ValueError(f'retrieval.embedding_models[{index}] must be a mapping')
+        missing_settings = sorted(required_embedding_settings - set(embedding_model))
         if missing_settings:
-            raise ValueError(
-                f'retrieval.embedding_models[{index}] is missing: '
-                f'{missing_settings}'
-            )
-        model_id = str(embedding_model['id']).strip()
+            raise ValueError(f'retrieval.embedding_models[{index}] is missing: {missing_settings}')
+        model_id = embedding_model['id']
         if not model_id:
-            raise ValueError(
-                f'retrieval.embedding_models[{index}].id cannot be empty'
-            )
+            raise ValueError(f'retrieval.embedding_models[{index}].id cannot be empty')
         embedding_model_ids.append(model_id)
-        for setting in (
-                'dimension',
-                'max_sequence_length',
-                'batch_size',
-        ):
+        for setting in ('dimension', 'max_sequence_length', 'batch_size'):
             value = embedding_model[setting]
-            if (
-                    isinstance(value, bool)
-                    or not isinstance(value, int)
-                    or value < 1
-            ):
-                raise ValueError(
-                    f'retrieval.embedding_models[{index}].{setting} '
-                    'must be a positive integer'
-                )
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f'retrieval.embedding_models[{index}].{setting} must be a positive integer')
         if embedding_model['dtype'] not in TORCH_DTYPES:
             allowed_dtypes = ', '.join(TORCH_DTYPES)
-            raise ValueError(
-                f'retrieval.embedding_models[{index}].dtype must be '
-                f'one of: {allowed_dtypes}'
-            )
-        if not str(embedding_model['query_prompt']).strip():
-            raise ValueError(
-                f'retrieval.embedding_models[{index}].query_prompt '
-                'cannot be empty'
-            )
+            raise ValueError(f'retrieval.embedding_models[{index}].dtype must be one of: {allowed_dtypes}')
+        if not embedding_model['query_prompt']:
+            raise ValueError(f'retrieval.embedding_models[{index}].query_prompt cannot be empty')
     if len(embedding_model_ids) != len(set(embedding_model_ids)):
-        raise ValueError(
-            'retrieval.embedding_models cannot contain duplicate IDs'
-        )
+        raise ValueError('retrieval.embedding_models cannot contain duplicate IDs')
 
     orders = retrieval['example_orders']
     if not isinstance(orders, list) or not orders:
         raise ValueError('retrieval.example_orders must be a non-empty list')
     unknown_orders = sorted(set(orders) - EXAMPLE_ORDERS)
     if unknown_orders:
-        raise ValueError(
-            f'Unknown example orders {unknown_orders}; expected values '
-            f'from {sorted(EXAMPLE_ORDERS)}'
-        )
+        raise ValueError(f'Unknown example orders {unknown_orders}; expected values from {sorted(EXAMPLE_ORDERS)}')
     if len(orders) != len(set(orders)):
         raise ValueError('retrieval.example_orders cannot contain duplicates')
 
@@ -826,17 +795,13 @@ def order_examples(
         return examples[::-1]
 
     if order == 'shuffle':
-        return sorted(
-            examples,
-            key=lambda example: hashlib.sha256(
-                f'{seed}:{example[Column.ID]}'.encode()
-            ).digest(),
-        )
+        random.Random(seed).shuffle(examples)
+        return examples
 
     raise RuntimeError(f'Example order {order!r} is allowed but not implemented')
 
 
-def display_column_name(column: Column | str) -> str:
+def display_column_name(column: Column) -> str:
     """Return a human-readable name for a dataset column used in prompts."""
 
     return str(column).replace('_', ' ').title()
@@ -895,21 +860,21 @@ def build_prompt(
     return messages
 
 
-def load_language_model(model_id: str, device: str, dtype_name: str) -> tuple[PreTrainedTokenizerBase, PreTrainedModel]:
+def load_llm(
+        model_id: str,
+        revision: str,
+        device: str,
+        dtype_name: str,
+) -> tuple[PreTrainedTokenizerBase, PreTrainedModel]:
     """Load one causal or multimodal Hugging Face language model."""
 
     tokenizer = cast(
         PreTrainedTokenizerBase,
-        cast(object, AutoTokenizer.from_pretrained(model_id)),
-    )
-    dtype: str | torch.dtype = (
-        'auto' if dtype_name == 'auto' else TORCH_DTYPES[dtype_name]
+        cast(object, AutoTokenizer.from_pretrained(model_id, revision=revision)),
     )
 
-    try:
-        model = AutoModelForCausalLM.from_pretrained(model_id, dtype=dtype)
-    except ValueError:
-        model = AutoModelForMultimodalLM.from_pretrained(model_id, dtype=dtype)
+    dtype: str | torch.dtype = 'auto' if dtype_name == 'auto' else TORCH_DTYPES[dtype_name]
+    model = AutoModelForCausalLM.from_pretrained(model_id, revision=revision, dtype=dtype)
 
     model.to(device)
     model.eval()
@@ -931,9 +896,7 @@ def _apply_chat_template(messages: list[dict[str, str]], tokenizer: PreTrainedTo
     """Render structured messages directly as one unpadded token sequence."""
 
     if not getattr(tokenizer, 'chat_template', None):
-        raise ValueError(
-            f'{tokenizer.name_or_path} must provide a chat template for this experiment'
-        )
+        raise ValueError(f'{tokenizer.name_or_path} must provide a chat template for this experiment')
 
     encoded = tokenizer.apply_chat_template(
         messages,
@@ -977,16 +940,13 @@ def score_allowed_labels(
         raise ValueError('At least one allowed label is required')
 
     empty_answer_ids = _apply_chat_template(
-        [*messages, {'role': 'assistant', 'content': ''}],
+        [
+            *messages,
+            {'role': 'assistant', 'content': ''}
+        ],
         tokenizer,
     )
     empty_token_ids: list[int] = empty_answer_ids.tolist()
-
-    try:
-        forward_parameters = inspect.signature(model.forward).parameters
-    except (TypeError, ValueError):
-        forward_parameters = {}
-    supports_limited_logits = 'logits_to_keep' in forward_parameters
 
     scores: dict[str, float] = {}
     reference_prompt_ids: torch.Tensor | None = None
@@ -997,93 +957,61 @@ def score_allowed_labels(
         )
         full_token_ids: list[int] = full_answer_ids.tolist()
 
+        if len(full_token_ids) <= len(empty_token_ids):
+            raise RuntimeError(f'Allowed label {label} did not add tokens to the formatted chat')
+
         prefix_length = 0
-        shared_length = min(len(empty_token_ids), len(full_token_ids))
-        while (
-                prefix_length < shared_length
-                and empty_token_ids[prefix_length]
-                == full_token_ids[prefix_length]
-        ):
+        while prefix_length < len(empty_token_ids) and empty_token_ids[prefix_length] == full_token_ids[prefix_length]:
             prefix_length += 1
 
         suffix_length = 0
         while (
                 suffix_length < len(empty_token_ids) - prefix_length
-                and suffix_length < len(full_token_ids) - prefix_length
-                and empty_token_ids[-1 - suffix_length]
-                == full_token_ids[-1 - suffix_length]
+                and empty_token_ids[-1 - suffix_length] == full_token_ids[-1 - suffix_length]
         ):
             suffix_length += 1
 
         if prefix_length + suffix_length != len(empty_token_ids):
             raise RuntimeError(
-                f'{tokenizer.name_or_path} does not expose an unambiguous '
-                'assistant-content span through its chat template'
+                f'{tokenizer.name_or_path} does not expose an unambiguous assistant-content span through its chat template'
             )
 
-        candidate_stop = (
-            len(full_token_ids) - suffix_length
-            if suffix_length
-            else len(full_token_ids)
-        )
+        candidate_stop = len(full_token_ids) - suffix_length
         prompt_ids = full_answer_ids[:prefix_length]
         candidate_ids = full_answer_ids[prefix_length:candidate_stop]
+
         if prompt_ids.numel() == 0:
             raise ValueError('The formatted chat produced no prompt tokens')
         if candidate_ids.numel() == 0:
-            raise ValueError(f'Allowed label {label!r} produced no tokens')
+            raise ValueError(f'Allowed label {label} produced no tokens')
         if reference_prompt_ids is None:
             reference_prompt_ids = prompt_ids
         elif not torch.equal(reference_prompt_ids, prompt_ids):
-            raise RuntimeError(
-                'The chat template produced label-dependent prompt tokens'
-            )
+            raise RuntimeError('The chat template produced label-dependent prompt tokens')
 
-        full_ids = torch.cat((prompt_ids, candidate_ids)).unsqueeze(0).to(device)
-        attention_mask = torch.ones_like(full_ids)
-        forward_kwargs: dict[str, Any] = {
-            'input_ids': full_ids,
-            'attention_mask': attention_mask,
-            'use_cache': False,
-        }
+        scoring_ids = full_answer_ids[:candidate_stop - 1].unsqueeze(0).to(device)
 
         with torch.inference_mode():
-            if supports_limited_logits:
-                # The final C+1 positions begin at the logit that predicts the
-                # first of C candidate tokens. The last position is unused.
-                output = model(
-                    **forward_kwargs,
-                    logits_to_keep=int(candidate_ids.numel()) + 1,
-                )
-                candidate_logits = output.logits[
-                    0, : int(candidate_ids.numel()), :
-                ]
-            else:
-                output = model(**forward_kwargs)
-                start = int(prompt_ids.numel()) - 1
-                stop = start + int(candidate_ids.numel())
-                candidate_logits = output.logits[0, start:stop, :]
+            # Omitting the final candidate token leaves exactly the C logits
+            # that predict the C candidate tokens.
+            output = model(input_ids=scoring_ids, use_cache=False, logits_to_keep=candidate_ids.numel())
+            candidate_logits = output.logits[0]
 
             if candidate_logits.shape[0] != candidate_ids.numel():
-                raise RuntimeError(
-                    f'Could not align model logits for allowed label {label!r}'
-                )
-            token_log_probabilities = torch.log_softmax(
-                candidate_logits.float(), dim=-1
-            )
+                raise RuntimeError(f'Could not align model logits for allowed label {label}')
+
+            token_log_probabilities = torch.log_softmax(candidate_logits.float(), dim=-1)
             candidate_on_device = candidate_ids.to(device)
             selected_token_log_probabilities = token_log_probabilities.gather(
                 1, candidate_on_device.unsqueeze(1)
             ).squeeze(1)
-            score = float(selected_token_log_probabilities.mean().item())
+            score = selected_token_log_probabilities.mean().item()
 
         if not np.isfinite(score):
-            raise RuntimeError(
-                f'Model returned a non-finite score for allowed label {label!r}'
-            )
+            raise RuntimeError(f'Model returned a non-finite score for allowed label {label}')
         scores[label] = score
 
-    predicted_label = max(labels, key=scores.__getitem__)
+    predicted_label = max(labels, key=lambda label: scores[label])
     return predicted_label, scores
 
 
@@ -1434,7 +1362,7 @@ def calculate_metrics(
 def rank_results(
         results: pd.DataFrame, metric: str, direction: str
 ) -> pd.DataFrame:
-    """Rank prompt configurations by the configured primary metric."""
+    """Rank prompt configurations separately within each language model."""
 
     if metric not in results.columns:
         available = ', '.join(results.select_dtypes(include='number').columns)
@@ -1445,26 +1373,26 @@ def rank_results(
         raise ValueError(f'Ranking metric {metric!r} must be numeric')
     if results[metric].notna().sum() == 0:
         raise ValueError(f'Ranking metric {metric!r} is undefined for every condition')
-    ranked = results.copy()
+    ranked = results.sort_values(
+        ['model', metric, 'condition'],
+        ascending=[True, direction == 'minimize', True],
+        na_position='last',
+        kind='stable',
+    ).reset_index(drop=True)
     ranked.insert(
         0,
         'rank',
-        ranked[metric].rank(
-            method='min',
-            ascending=direction == 'minimize',
-            na_option='bottom',
-        ).astype('Int64'),
+        ranked.groupby('model', sort=False).cumcount() + 1,
     )
-    ranked.insert(1, 'is_best', ranked['rank'] == 1)
-    return ranked.sort_values(['rank', 'condition'], kind='stable').reset_index(drop=True)
+    ranked.insert(1, 'is_best', ranked['rank'].eq(1))
+    return ranked
 
 
 def _plot_results(
         validation_results: pd.DataFrame,
         output: Path,
-        test_results: pd.DataFrame,
 ) -> None:
-    """Plot validation comparisons and annotate the selected prompt's test score."""
+    """Plot validation comparisons; final-test rows are saved separately."""
 
     import matplotlib.pyplot as plt
 
@@ -1515,56 +1443,50 @@ def _plot_results(
     for axis in axes:
         axis.grid(axis='x', alpha=0.2)
         axis.set_xlabel('Score')
-    final = test_results.iloc[0]
     figure.suptitle(
         f'Validation prompt comparison — target: {plot_frame['target'].iloc[0]}, '
         f'audit groups: {plot_frame['audit_column'].iloc[0]}\n'
-        f'Selected prompt final test: accuracy={final['accuracy']:.3f}, '
-        f'macro-F1={final['macro_f1']:.3f}, '
-        f'max equalized-odds difference='
-        f'{final['max_equalized_odds_difference']:.3f}'
+        f'One validation winner and one final-test row per model'
     )
     figure.tight_layout(rect=(0, 0, 1, 0.94))
     figure.savefig(output, dpi=160, bbox_inches='tight')
     plt.close(figure)
 
 
-def _write_best_prompt(
+def _write_best_prompts(
         path: Path,
-        best: pd.Series,
+        selected: pd.DataFrame,
         prompt_templates: Mapping[str, Any],
         labels: list[str],
         ranking_metric: str,
         ranking_direction: str,
-        final_result: pd.Series,
+        final_results: pd.DataFrame,
 ) -> None:
-    """Save the validation-selected prompt and final-test score in plain text."""
+    """Save one validation-selected prompt and final-test score per model."""
 
-    resolved_prompt = str(prompt_templates[best['prompt_name']]).format(
-        target=display_column_name(best['target']),
-        other_column=display_column_name(best['audit_column']),
-        labels=', '.join(labels),
-    )
-    text = (
-        f'Selected on validation metric: {ranking_metric} ({ranking_direction})\n'
-        f'Validation score: {best[ranking_metric]}\n'
-        f'Final test score for the same metric: {final_result[ranking_metric]}\n'
-        f'Final test accuracy: {final_result['accuracy']}\n'
-        f'Final test macro-F1: {final_result['macro_f1']}\n'
-        f'Target: {best['target']}\n'
-        f'Retrieval: {best['retrieval']}\n'
-        f'Embedding model: {best['embedding_model']}\n'
-        f'k: {best['k']}\n'
-        f'Example order: {best['example_order']}\n'
-        f'Prompt name: {best['prompt_name']}\n'
-        f'Model: {best['model']}\n\n'
-        'Resolved master prompt:\n'
-        f'{resolved_prompt}\n\n'
-        'The complete structured chat also contains the retrieved examples, '
-        'allowed labels, and each evaluation query; those messages are saved '
-        'as JSON in predictions.csv.\n'
-    )
-    path.write_text(text, encoding='utf-8')
+    sections: list[str] = []
+    final_by_model = final_results.set_index('model')
+    for best in selected.itertuples(index=False):
+        final_result = final_by_model.loc[best.model]
+        resolved_prompt = str(prompt_templates[best.prompt_name]).format(
+            target=display_column_name(best.target),
+            other_column=display_column_name(best.audit_column),
+            labels=', '.join(labels),
+        )
+        sections.append(
+            f'Model: {best.model}\n'
+            f'Selected on validation metric: {ranking_metric} '
+            f'({ranking_direction})\n'
+            f'Validation score: {getattr(best, ranking_metric)}\n'
+            f'Final test score: {final_result[ranking_metric]}\n'
+            f'Retrieval: {best.retrieval}\n'
+            f'Embedding model: {best.embedding_model}\n'
+            f'k: {best.k}\n'
+            f'Example order: {best.example_order}\n'
+            f'Prompt name: {best.prompt_name}\n\n'
+            f'{resolved_prompt}'
+        )
+    path.write_text('\n\n---\n\n'.join(sections) + '\n', encoding='utf-8')
 
 
 def _build_conditions(
@@ -1798,8 +1720,9 @@ def run_experiment(
             f'Loading language model [{model_number}/{len(language_models)}]: '
             f'{language_model_id}'
         )
-        tokenizer, language_model = load_language_model(
+        tokenizer, language_model = load_llm(
             language_model_id,
+            str(language_model_settings['revision']),
             device,
             str(language_model_settings['dtype']),
         )
@@ -1841,40 +1764,54 @@ def run_experiment(
         str(defaults['ranking_metric']),
         str(defaults['ranking_direction']),
     )
-    validation_results.insert(2, 'selected_for_test', False)
-    validation_results.loc[0, 'selected_for_test'] = True
-    best_validation = validation_results.iloc[0]
-    selected_setting = next(
-        setting
-        for setting in conditions
-        if setting['condition'] == best_validation['condition']
+    validation_results.insert(
+        2, 'selected_for_test', validation_results['rank'].eq(1)
     )
-    selected_model_settings = next(
-        settings
-        for settings in language_models
-        if settings['id'] == selected_setting['model']
-    )
+    selected_validation = validation_results.loc[
+        validation_results['selected_for_test']
+    ].copy()
+    if len(selected_validation) != len(language_models):
+        raise RuntimeError('Validation must select exactly one condition per model')
 
-    progress(f'Loading selected language model: {selected_setting['model']}')
-    tokenizer, language_model = load_language_model(
-        str(selected_model_settings['id']),
-        device,
-        str(selected_model_settings['dtype']),
-    )
-    try:
-        progress(f'Final test: {selected_setting['condition']}')
-        test_predictions = pd.DataFrame(
-            generate_condition_predictions(
-                selected_setting,
-                test,
-                'test',
-                tokenizer,
-                language_model,
-            )
+    conditions_by_name = {
+        str(setting['condition']): setting for setting in conditions
+    }
+    selected_by_model = {
+        str(row['model']): row
+        for row in selected_validation.to_dict('records')
+    }
+    test_prediction_rows: list[dict[str, Any]] = []
+    for model_number, language_model_settings in enumerate(
+            language_models, start=1
+    ):
+        language_model_id = str(language_model_settings['id'])
+        best_validation = selected_by_model[language_model_id]
+        selected_setting = conditions_by_name[str(best_validation['condition'])]
+        progress(
+            f'Loading selected language model '
+            f'[{model_number}/{len(language_models)}]: {language_model_id}'
         )
-    finally:
-        del tokenizer, language_model
-        clear_model_memory(device)
+        tokenizer, language_model = load_llm(
+            language_model_id,
+            str(language_model_settings['revision']),
+            device,
+            str(language_model_settings['dtype']),
+        )
+        try:
+            progress(f'Final test: {selected_setting['condition']}')
+            test_prediction_rows.extend(
+                generate_condition_predictions(
+                    selected_setting,
+                    test,
+                    'test',
+                    tokenizer,
+                    language_model,
+                )
+            )
+        finally:
+            del tokenizer, language_model
+            clear_model_memory(device)
+    test_predictions = pd.DataFrame(test_prediction_rows)
     (
         results,
         test_class_metrics,
@@ -1886,7 +1823,9 @@ def run_experiment(
     results.insert(
         1,
         'validation_selection_score',
-        best_validation[str(defaults['ranking_metric'])],
+        results['model'].map(
+            selected_validation.set_index('model')[str(defaults['ranking_metric'])]
+        ),
     )
 
     predictions = pd.concat(
@@ -1923,16 +1862,16 @@ def run_experiment(
         yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
 
     plot_path = run_dir / 'results.png'
-    _plot_results(validation_results, plot_path, results)
-    best_prompt_path = run_dir / 'best_prompt.txt'
-    _write_best_prompt(
-        best_prompt_path,
-        best_validation,
+    _plot_results(validation_results, plot_path)
+    best_prompts_path = run_dir / 'best_prompts.txt'
+    _write_best_prompts(
+        best_prompts_path,
+        selected_validation,
         prompt_templates,
         labels,
         str(defaults['ranking_metric']),
         str(defaults['ranking_direction']),
-        results.iloc[0],
+        results,
     )
 
     progress(f'Finished: {run_dir}')
@@ -1947,5 +1886,5 @@ def run_experiment(
         'fairness_metrics': fairness_metrics,
         'dataset_counts': dataset_counts,
         'plot': plot_path,
-        'best_prompt': best_prompt_path,
+        'best_prompts': best_prompts_path,
     }

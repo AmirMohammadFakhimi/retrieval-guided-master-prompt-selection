@@ -28,6 +28,13 @@ do not provide arbitrary teacher-forced candidate likelihoods. Using structured
 output through either server would be a different method: constrained
 generation instead of the current label scorer.
 
+## Structure
+
+- `pipeline.py`: configuration validation and experiment orchestration;
+- `dataset.py`: Bias-in-Bios loading, cleaning, and target settings;
+- `modeling.py`: retrieval, prompt construction, and model scoring;
+- `evaluation.py`: metrics, ranking, plots, and selected-prompt reporting.
+
 ## Run
 
 ```bash

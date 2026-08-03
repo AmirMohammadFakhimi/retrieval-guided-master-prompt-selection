@@ -27,19 +27,19 @@ def run_from_yaml(config_text: str):
         ].copy()
         final = output["results"].copy()
         ranking_metric = config["defaults"]["ranking_metric"]
-        configured_models = [entry["id"] for entry in config["model"]["language_models"]]
+        llm_ids = [entry["id"] for entry in config["llm"]["llms"]]
         if (
-            len(selected) != len(configured_models)
-            or selected["model"].nunique() != len(configured_models)
-            or set(selected["model"]) != set(configured_models)
+            len(selected) != len(llm_ids)
+            or selected["llm"].nunique() != len(llm_ids)
+            or set(selected["llm"]) != set(llm_ids)
         ):
-            raise ValueError("Expected exactly one validation-selected condition per model")
+            raise ValueError("Expected exactly one validation-selected condition per LLM")
         if (
-            len(final) != len(configured_models)
-            or final["model"].nunique() != len(configured_models)
-            or set(final["model"]) != set(configured_models)
+            len(final) != len(llm_ids)
+            or final["llm"].nunique() != len(llm_ids)
+            or set(final["llm"]) != set(llm_ids)
         ):
-            raise ValueError("Expected exactly one independent final-test result per model")
+            raise ValueError("Expected exactly one independent final-test result per LLM")
 
         prediction_columns = [
             "evaluation_split",
@@ -50,7 +50,7 @@ def run_from_yaml(config_text: str):
             "condition",
             "retrieval",
             "embedding_model",
-            "model",
+            "llm",
             "k",
             "example_order",
             "prompt_name",
@@ -64,11 +64,11 @@ def run_from_yaml(config_text: str):
             prediction_columns,
         ]
         selection_lines = []
-        for model_id in configured_models:
-            selected_row = selected.loc[selected["model"].eq(model_id)].iloc[0]
-            final_row = final.loc[final["model"].eq(model_id)].iloc[0]
+        for llm_id in llm_ids:
+            selected_row = selected.loc[selected["llm"].eq(llm_id)].iloc[0]
+            final_row = final.loc[final["llm"].eq(llm_id)].iloc[0]
             selection_lines.append(
-                f"- **{model_id}**: "
+                f"- **{llm_id}**: "
                 f"`{selected_row['condition']}` — validation "
                 f"`{ranking_metric}={selected_row[ranking_metric]}`; final test "
                 f"`{ranking_metric}={final_row[ranking_metric]}`"
@@ -76,7 +76,7 @@ def run_from_yaml(config_text: str):
         status = "\n".join(
             [
                 f"Finished. Results: `{output['run_dir']}`  ",
-                f"One validation winner per model on `{ranking_metric}`:",
+                f"One validation winner per LLM on `{ranking_metric}`:",
                 "",
                 *selection_lines,
                 "",
@@ -117,40 +117,40 @@ The YAML below is the single source of settings.
   cached training row. It limits the retrieval pool, not the downloaded cache.
 - `dataset.shuffle_seed` reproducibly shuffles the official `train`, `dev`, and
   `test` splits before row selection. Keep it fixed across experiment seeds.
-- Every language model × retrieval method × embedding model × `k` × example
+- Every LLM × retrieval method × embedding model × `k` × example
   order × master prompt is a validation condition on `dev`. Validation selects
-  one winner **within each language model**; those winners alone run on final
+  one winner **within each LLM**; those winners alone run on final
   `test` rows.
 - `validation_per_profession_gender` is the main search-runtime multiplier.
   `test_per_profession_gender` controls the independent final evaluation.
   The thesis defaults are 5 validation and 10 test rows per cell.
-- Larger `k` gives the model more examples but makes prompts longer.
+- Larger `k` gives the LLM more examples but makes prompts longer.
 - `semantic` takes the exact nearest biographies by cosine similarity.
 - `balanced_semantic` repeatedly takes the nearest currently feasible
   biography while keeping profession, gender, and joint-cell counts as even
   as `k` permits. It expands the LanceDB search automatically when necessary.
 - Every `embedding_models` entry creates separate `semantic` and
   `balanced_semantic` conditions.
-- Every `model.language_models` entry creates a separate language-model
-  condition. The pipeline loads and releases Hugging Face models sequentially.
+- Every `llm.llms` entry creates a separate LLM condition. The pipeline loads
+  and releases LLMs sequentially.
 - The master prompt and output constraints form the system message. Retrieved
   examples become user/assistant demonstrations, and the evaluation biography
-  is the final user message rendered by each model's native chat template.
+  is the final user message rendered by each LLM's native chat template.
 - Qwen uses a 1024-token cap, while BGE retains its architectural 512-token
   maximum. Both receive their own trained query prefix; cached training
   biographies remain raw `hard_text`.
 - Each embedding-model ID owns one readable reusable LanceDB table. Delete
   `data/lancedb/` before changing data or embedding settings.
-- The model scores every allowed label and chooses the largest mean conditional
+- The LLM scores every allowed label and chooses the largest mean conditional
   token log-probability. These scores rank labels; they are not calibrated
   probabilities.
 - The selected-test-predictions tab shows allowed-label log-scores for every
-  model's validation-selected condition.
+  LLM's validation-selected condition.
 - `ranking_metric: macro_f1` with `maximize` is the quality-oriented default.
   To rank by a disparity such as `max_equalized_odds_difference`, use
   `ranking_direction: minimize`.
 - `device: mps` requires Apple GPU support and fails instead of falling back to
-  CPU for these large models.
+  CPU for these large LLMs.
 
 Key formulas:
 
@@ -189,11 +189,11 @@ README explains every setting, metric, denominator, and interpretation.
         with gr.Tabs():
             with gr.Tab("Prompt selection and final test"):
                 validation_results = gr.Dataframe(
-                    label="Validation conditions; selected_for_test marks one winner per model",
+                    label="Validation conditions; selected_for_test marks one winner per LLM",
                     interactive=False,
                 )
                 results = gr.Dataframe(
-                    label="Independent final-test result for each model's selected condition",
+                    label="Independent final-test result for each LLM's selected condition",
                     interactive=False,
                 )
             with gr.Tab("Metric details"):
@@ -215,7 +215,7 @@ README explains every setting, metric, denominator, and interpretation.
                 )
             with gr.Tab("Selected test predictions"):
                 predictions = gr.Dataframe(
-                    label="Final-test labels and scores for all selected model conditions",
+                    label="Final-test labels and scores for all selected LLM conditions",
                     interactive=False,
                 )
             with gr.Tab("Data and plot"):

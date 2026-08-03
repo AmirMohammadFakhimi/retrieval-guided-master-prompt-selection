@@ -18,7 +18,7 @@ CONDITION_COLUMNS = [
     'k',
     'example_order',
     'prompt_name',
-    'model',
+    'llm',
 ]
 
 
@@ -31,8 +31,10 @@ def _rate_range(values: list[float]) -> float:
     return max(defined) - min(defined) if len(defined) >= 2 else np.nan
 
 
-def calculate_metrics(predictions: pd.DataFrame, labels: list[str]
-                      ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def calculate_metrics(
+        predictions: pd.DataFrame,
+        labels: list[str]
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Calculate hard-label classification and group-disparity metrics."""
 
     result_rows: list[dict[str, Any]] = []
@@ -266,7 +268,7 @@ def calculate_metrics(predictions: pd.DataFrame, labels: list[str]
 def rank_results(
         results: pd.DataFrame, metric: str, direction: str
 ) -> pd.DataFrame:
-    """Rank prompt configurations separately within each language model."""
+    """Rank prompt configurations separately within each LLM."""
 
     if metric not in results.columns:
         available = ', '.join(results.select_dtypes(include='number').columns)
@@ -278,7 +280,7 @@ def rank_results(
     if results[metric].notna().sum() == 0:
         raise ValueError(f'Ranking metric {metric!r} is undefined for every condition')
     ranked = results.sort_values(
-        ['model', metric, 'condition'],
+        ['llm', metric, 'condition'],
         ascending=[True, direction == 'minimize', True],
         na_position='last',
         kind='stable',
@@ -286,7 +288,7 @@ def rank_results(
     ranked.insert(
         0,
         'rank',
-        ranked.groupby('model', sort=False).cumcount() + 1,
+        ranked.groupby('llm', sort=False).cumcount() + 1,
     )
     ranked.insert(1, 'is_best', ranked['rank'].eq(1))
     return ranked
@@ -305,7 +307,7 @@ def plot_results(
     ).reset_index(drop=True)
     labels = [
         (
-            f'model={row.model}, {row.retrieval}, '
+            f'llm={row.llm}, {row.retrieval}, '
             f'embedding={row.embedding_model}, '
             f'k={row.k}, {row.prompt_name}, {row.example_order}'
         )
@@ -350,7 +352,7 @@ def plot_results(
     figure.suptitle(
         f'Validation prompt comparison — target: {plot_frame['target'].iloc[0]}, '
         f'audit groups: {plot_frame['audit_column'].iloc[0]}\n'
-        f'One validation winner and one final-test row per model'
+        f'One validation winner and one final-test row per LLM'
     )
     figure.tight_layout(rect=(0, 0, 1, 0.94))
     figure.savefig(output, dpi=160, bbox_inches='tight')
@@ -366,19 +368,19 @@ def write_best_prompts(
         ranking_direction: str,
         final_results: pd.DataFrame,
 ) -> None:
-    """Save one validation-selected prompt and final-test score per model."""
+    """Save one validation-selected prompt and final-test score per LLM."""
 
     sections: list[str] = []
-    final_by_model = final_results.set_index('model')
+    final_by_llm = final_results.set_index('llm')
     for best in selected.itertuples(index=False):
-        final_result = final_by_model.loc[best.model]
+        final_result = final_by_llm.loc[best.llm]
         resolved_prompt = prompt_templates[best.prompt_name].format(
             target=display_column_name(best.target),
             other_column=display_column_name(best.audit_column),
             labels=', '.join(labels),
         )
         sections.append(
-            f'Model: {best.model}\n'
+            f'LLM: {best.llm}\n'
             f'Selected on validation metric: {ranking_metric} '
             f'({ranking_direction})\n'
             f'Validation score: {getattr(best, ranking_metric)}\n'

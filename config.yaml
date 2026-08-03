@@ -13,7 +13,7 @@ defaults:
   # Final: results is suitable; use results_profession/results_gender if desired.
   output_dir: results
 
-  # Validation metric that selects one prompt per model for final test.
+  # Validation metric that selects one prompt per LLM for final test.
   # Final quality-oriented choice: macro_f1. For a separate fairness-oriented
   # analysis use max_equalized_odds_difference with direction: minimize.
   ranking_metric: macro_f1
@@ -35,7 +35,7 @@ dataset:
   professions: all
 
   # Reproducibly shuffle train, dev, and test before selecting rows. Keep this
-  # fixed so every model sees the same retrieval pool and evaluation rows.
+  # fixed so every LLM sees the same retrieval pool and evaluation rows.
   shuffle_seed: 42
 
   # Retrieval-pool size applied after the complete source dataset is cached.
@@ -62,7 +62,7 @@ retrieval:
 
   # Number of labelled few-shot examples inserted into each prompt.
   # Every value creates another condition. Final practical search: [2, 4];
-  # optionally add 8 if the model context and runtime allow.
+  # optionally add 8 if the LLM context and runtime allow.
   k_values: [2, 4]
 
   # Valid values: as_retrieved, reverse, shuffle.
@@ -70,8 +70,8 @@ retrieval:
   example_orders: [as_retrieved]
 
   # Each entry creates semantic and balanced_semantic conditions.
-  # Model-specific settings are required because dimensions, context limits,
-  # precision, batch capacity, and trained query prefixes differ.
+  # Embedding-model-specific settings are required because dimensions, context
+  # limits, precision, batch capacity, and trained query prefixes differ.
   embedding_models:
     - id: Qwen/Qwen3-Embedding-8B
       # Full native output. If exact search is too slow, test 2048 separately.
@@ -98,8 +98,8 @@ retrieval:
       # BGE's official English retrieval prefix; documents remain unprefixed.
       query_prompt: "Represent this sentence for searching relevant passages: "
 
-  # Persistent LanceDB directory. Each model ID receives one reusable table.
-  # Delete this directory before rerunning with changed data or model settings.
+  # Persistent LanceDB directory. Each embedding model ID receives one reusable
+  # table. Delete this directory before rerunning with changed data or settings.
   lancedb_path: data/lancedb
 
 # Every named entry creates another prompt condition. Supported placeholders:
@@ -116,11 +116,11 @@ prompt_templates:
     Apply the same decision rule across {other_column} groups and avoid
     unsupported stereotypes.
 
-model:
-  # Every entry creates a separate language-model condition. Models are loaded
+llm:
+  # Every entry creates a separate LLM condition. LLMs are loaded
   # and released one at a time so their weights are never resident together.
   # This precision is separate from each retrieval embedding model's dtype.
-  language_models:
+  llms:
     - id: Qwen/Qwen3.6-27B
       revision: 6a9e13bd6fc8f0983b9b99948120bc37f49c13e9
       dtype: bfloat16

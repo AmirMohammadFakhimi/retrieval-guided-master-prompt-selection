@@ -33,11 +33,11 @@ TORCH_DTYPES = {
     'float16': torch.float16,
     'bfloat16': torch.bfloat16,
 }
-LANGUAGE_MODEL_DTYPES = frozenset({*TORCH_DTYPES, 'auto'})
+LLM_DTYPES = frozenset({*TORCH_DTYPES, 'auto'})
 
 
 class SemanticResource(TypedDict):
-    """LanceDB table and matching evaluation embeddings for one model."""
+    """LanceDB table and matching evaluation embeddings for one embedding model."""
 
     table: LanceTable
     validation_vectors: np.ndarray
@@ -48,7 +48,7 @@ def choose_device(requested: str = 'auto') -> str:
     """Choose CUDA, then Apple MPS, then CPU."""
 
     if requested not in {'auto', 'cuda', 'mps', 'cpu'}:
-        raise ValueError('model.device must be auto, cuda, mps, or cpu')
+        raise ValueError('llm.device must be auto, cuda, mps, or cpu')
 
     if requested == 'auto':
         if torch.cuda.is_available():
@@ -68,21 +68,21 @@ def choose_device(requested: str = 'auto') -> str:
 def prepare_semantic_retrieval(
         train: list[dict[str, Any]],
         queries: list[dict[str, Any]],
-        model_settings: dict[str, Any],
+        embedding_model: dict[str, Any],
         device: str,
         database_path: Path,
         progress: Callable[[str], None] = print,
 ) -> tuple[LanceTable, np.ndarray]:
     """Open or build the persistent LanceDB training table and encode queries."""
 
-    model_name = model_settings['id']
-    embedding_dimension = model_settings['dimension']
-    max_sequence_length = model_settings['max_sequence_length']
-    batch_size = model_settings['batch_size']
-    dtype_name = model_settings['dtype']
-    query_prompt = model_settings['query_prompt']
+    embedding_model_id = embedding_model['id']
+    embedding_dimension = embedding_model['dimension']
+    max_sequence_length = embedding_model['max_sequence_length']
+    batch_size = embedding_model['batch_size']
+    dtype_name = embedding_model['dtype']
+    query_prompt = embedding_model['query_prompt']
     database = lancedb.connect(database_path)
-    table_name = f'semantic_{model_name.lower().replace("/", "_")}'
+    table_name = f'semantic_{embedding_model_id.lower().replace("/", "_")}'
 
     if table_name in database.list_tables().tables:
         table = database.open_table(table_name)
@@ -101,7 +101,7 @@ def prepare_semantic_retrieval(
         table = None
 
     encoder = SentenceTransformer(
-        model_name,
+        embedding_model_id,
         device=device,
         model_kwargs={'dtype': TORCH_DTYPES[dtype_name]},
         truncate_dim=embedding_dimension,
@@ -406,29 +406,29 @@ def build_prompt(
 
 
 def load_llm(
-        model_id: str,
+        llm_id: str,
         revision: str,
         device: str,
         dtype_name: str,
 ) -> tuple[PreTrainedTokenizerBase, PreTrainedModel]:
-    """Load one causal or multimodal Hugging Face language model."""
+    """Load one causal Hugging Face LLM."""
 
     tokenizer = cast(
         PreTrainedTokenizerBase,
-        cast(object, AutoTokenizer.from_pretrained(model_id, revision=revision)),
+        cast(object, AutoTokenizer.from_pretrained(llm_id, revision=revision)),
     )
 
     dtype: str | torch.dtype = 'auto' if dtype_name == 'auto' else TORCH_DTYPES[dtype_name]
-    model = AutoModelForCausalLM.from_pretrained(model_id, revision=revision, dtype=dtype)
+    llm = AutoModelForCausalLM.from_pretrained(llm_id, revision=revision, dtype=dtype)
 
-    model.to(device)
-    model.eval()
+    llm.to(device)
+    llm.eval()
 
-    return tokenizer, model
+    return tokenizer, llm
 
 
-def clear_model_memory(device: str) -> None:
-    """Collect released model objects and clear the active accelerator cache."""
+def clear_llm_memory(device: str) -> None:
+    """Collect released LLM objects and clear the active accelerator cache."""
 
     gc.collect()
     if device == 'cuda':
@@ -468,13 +468,13 @@ def score_allowed_labels(
         messages: list[dict[str, str]],
         labels: list[str],
         tokenizer: PreTrainedTokenizerBase,
-        model: PreTrainedModel,
+        llm: PreTrainedModel,
         device: str,
 ) -> tuple[str, dict[str, float]]:
     """Choose among allowed labels using mean conditional token log-probability.
 
     Each label is rendered as the final assistant message. Comparing that
-    rendering with an empty assistant message isolates the exact model-specific
+    rendering with an empty assistant message isolates the exact LLM-specific
     assistant prefix, label tokens, and end markers. Mean rather than summed
     log-probability reduces the automatic disadvantage of labels that use more
     tokenizer tokens. Labels are evaluated sequentially to keep accelerator
@@ -542,11 +542,11 @@ def score_allowed_labels(
         with torch.inference_mode():
             # Omitting the final candidate token leaves exactly the C logits
             # that predict the C candidate tokens.
-            output = model(input_ids=scoring_ids, use_cache=False, logits_to_keep=candidate_ids.numel())
+            output = llm(input_ids=scoring_ids, use_cache=False, logits_to_keep=candidate_ids.numel())
             candidate_logits = output.logits[0]
 
             if candidate_logits.shape[0] != candidate_ids.numel():
-                raise RuntimeError(f'Could not align model logits for allowed label {label}')
+                raise RuntimeError(f'Could not align LLM logits for allowed label {label}')
 
             token_log_probabilities = torch.log_softmax(candidate_logits.float(), dim=-1)
             candidate_on_device = candidate_ids.to(device)
@@ -556,7 +556,7 @@ def score_allowed_labels(
             score = selected_token_log_probabilities.mean().item()
 
         if not np.isfinite(score):
-            raise RuntimeError(f'Model returned a non-finite score for allowed label {label}')
+            raise RuntimeError(f'LLM returned a non-finite score for allowed label {label}')
         scores[label] = score
 
     predicted_label = max(labels, key=lambda label: scores[label])

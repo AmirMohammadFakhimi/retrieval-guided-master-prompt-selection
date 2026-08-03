@@ -221,9 +221,9 @@ def load_data(config: dict[str, Any], project_root: Path) -> tuple[
         )
     if not train:
         raise ValueError('The training demonstration pool is empty')
-    if int(max(config['retrieval']['k_values'])) > len(train):
+    if int(max(config['retrieval']['example_counts'])) > len(train):
         raise ValueError(
-            'Every retrieval.k_values entry must be <= the available training pool size ({len(train)})'
+            'Every retrieval.example_counts entry must be <= the available training pool size ({len(train)})'
         )
 
     validation_per_cell = dataset_config['validation_per_profession_gender']

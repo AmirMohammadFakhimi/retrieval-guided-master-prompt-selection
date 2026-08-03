@@ -85,13 +85,13 @@ def validate_config(config: dict[str, Any]) -> None:
         )
     if len(methods) != len(set(methods)):
         raise ValueError('retrieval.methods cannot contain duplicates')
-    k_values = [value for value in retrieval['k_values']]
-    if not k_values or any(value < 1 for value in k_values):
-        raise ValueError('retrieval.k_values must contain positive integers')
-    if train_size is not None and max(k_values) > train_size:
-        raise ValueError('Every retrieval.k_values entry must be <= dataset.train_size')
-    if len(k_values) != len(set(k_values)):
-        raise ValueError('retrieval.k_values cannot contain duplicates')
+    example_counts = [value for value in retrieval['example_counts']]
+    if not example_counts or any(value < 1 for value in example_counts):
+        raise ValueError('retrieval.example_counts must contain positive integers')
+    if train_size is not None and max(example_counts) > train_size:
+        raise ValueError('Every retrieval.example_counts entry must be <= dataset.train_size')
+    if len(example_counts) != len(set(example_counts)):
+        raise ValueError('retrieval.example_counts cannot contain duplicates')
     if not str(retrieval['lancedb_path']):
         raise ValueError('retrieval.lancedb_path cannot be empty')
 
@@ -153,7 +153,7 @@ def _build_conditions(
         methods: list[str],
         embedding_models: list[dict[str, Any]],
         llm_configs: list[dict[str, Any]],
-        k_values: list[int],
+        example_counts: list[int],
         example_orders: list[str],
         prompt_templates: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
@@ -165,20 +165,20 @@ def _build_conditions(
         for method in methods:
             for embedding_model in embedding_models:
                 embedding_model_id = embedding_model['id']
-                for k in k_values:
+                for example_count in example_counts:
                     for example_order in example_orders:
                         for prompt_name, master_prompt in prompt_templates.items():
                             condition = (
                                 f'{target} | llm={llm_id} | '
                                 f'{method} | embedding={embedding_model_id} | '
-                                f'k={k} | {example_order} | {prompt_name}'
+                                f'examples={example_count} | {example_order} | {prompt_name}'
                             )
                             conditions.append(
                                 {
                                     'condition': condition,
                                     'retrieval': method,
                                     'embedding_model': embedding_model_id,
-                                    'k': k,
+                                    'example_count': example_count,
                                     'example_order': example_order,
                                     'prompt_name': prompt_name,
                                     'master_prompt': master_prompt,
@@ -247,7 +247,7 @@ def run_experiment(
             'test_vectors': evaluation_vectors[len(validation):],
         }
 
-    k_values = list(config['retrieval']['k_values'])
+    example_counts = list(config['retrieval']['example_counts'])
     example_orders = list(config['retrieval']['example_orders'])
     prompt_templates = dict(config['prompt_templates'])
     training_cells = tuple(sorted({
@@ -262,7 +262,7 @@ def run_experiment(
         methods,
         embedding_models,
         llm_configs,
-        k_values,
+        example_counts,
         example_orders,
         prompt_templates,
     )
@@ -301,10 +301,10 @@ def run_experiment(
                     retrieval_method,
                     query_vector,
                     semantic_table,
-                    max(k_values),
+                    max(example_counts),
                     training_cells,
                 )
-            examples = retrieval_cache[retrieval_key][:setting['k']]
+            examples = retrieval_cache[retrieval_key][:setting['example_count']]
             examples = modeling.order_examples(
                 examples,
                 setting['example_order'],
@@ -339,7 +339,7 @@ def run_experiment(
                     'predicted_label': predicted_label,
                     'retrieval': retrieval_method,
                     'embedding_model': embedding_model_id,
-                    'k': setting['k'],
+                    'example_count': setting['example_count'],
                     'examples_used': len(examples),
                     'example_order': setting['example_order'],
                     'prompt_name': setting['prompt_name'],

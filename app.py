@@ -51,7 +51,7 @@ def run_from_yaml(config_text: str):
             "retrieval",
             "embedding_model",
             "llm",
-            "k",
+            "example_count",
             "example_order",
             "prompt_name",
             "label_scores",
@@ -117,18 +117,19 @@ The YAML below is the single source of settings.
   cached training row. It limits the retrieval pool, not the downloaded cache.
 - `dataset.shuffle_seed` reproducibly shuffles the official `train`, `dev`, and
   `test` splits before row selection. Keep it fixed across experiment seeds.
-- Every LLM × retrieval method × embedding model × `k` × example
+- Every LLM × retrieval method × embedding model × example count × example
   order × master prompt is a validation condition on `dev`. Validation selects
   one winner **within each LLM**; those winners alone run on final
   `test` rows.
 - `validation_per_profession_gender` is the main search-runtime multiplier.
   `test_per_profession_gender` controls the independent final evaluation.
   The thesis defaults are 5 validation and 10 test rows per cell.
-- Larger `k` gives the LLM more examples but makes prompts longer.
+- A larger example count gives the LLM more examples but makes prompts longer.
 - `semantic` takes the exact nearest biographies by cosine similarity.
 - `balanced_semantic` repeatedly takes the nearest currently feasible
   biography while keeping profession, gender, and joint-cell counts as even
-  as `k` permits. It expands the LanceDB search automatically when necessary.
+  as the example count permits. It expands the LanceDB search automatically
+  when necessary.
 - Every `embedding_models` entry creates separate `semantic` and
   `balanced_semantic` conditions.
 - Every `llm.llms` entry creates a separate LLM condition. The pipeline loads

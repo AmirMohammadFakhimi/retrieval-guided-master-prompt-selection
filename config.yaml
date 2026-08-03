@@ -60,10 +60,10 @@ retrieval:
   # cell counts as even as possible.
   methods: [semantic, balanced_semantic]
 
-  # Number of labelled few-shot examples inserted into each prompt.
+  # Numbers of labelled few-shot examples inserted into each prompt.
   # Every value creates another condition. Final practical search: [2, 4];
   # optionally add 8 if the LLM context and runtime allow.
-  k_values: [2, 4]
+  example_counts: [2, 4]
 
   # Valid values: as_retrieved, reverse, shuffle.
   # Final primary run: [as_retrieved]. For an order ablation, compare all three.

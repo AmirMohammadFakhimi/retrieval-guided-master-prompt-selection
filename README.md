@@ -57,5 +57,5 @@ Important outputs in each timestamped result folder:
 - class, confusion, group, fairness, data-composition, and plot outputs.
 
 The checked-in configuration has two retrieval methods, two embedding models,
-two `k` values, one example order, two master prompts, and four LLMs:
+two example counts, one example order, two master prompts, and four LLMs:
 64 validation conditions per target.

@@ -15,7 +15,7 @@ CONDITION_COLUMNS = [
     'audit_column',
     'retrieval',
     'embedding_model',
-    'k',
+    'example_count',
     'example_order',
     'prompt_name',
     'llm',
@@ -309,7 +309,7 @@ def plot_results(
         (
             f'llm={row.llm}, {row.retrieval}, '
             f'embedding={row.embedding_model}, '
-            f'k={row.k}, {row.prompt_name}, {row.example_order}'
+            f'examples={row.example_count}, {row.prompt_name}, {row.example_order}'
         )
         for row in plot_frame.itertuples(index=False)
     ]
@@ -387,7 +387,7 @@ def write_best_prompts(
             f'Final test score: {final_result[ranking_metric]}\n'
             f'Retrieval: {best.retrieval}\n'
             f'Embedding model: {best.embedding_model}\n'
-            f'k: {best.k}\n'
+            f'Examples: {best.example_count}\n'
             f'Example order: {best.example_order}\n'
             f'Prompt name: {best.prompt_name}\n\n'
             f'{resolved_prompt}'

@@ -231,7 +231,7 @@ def _get_semantic_candidate_page(
 def _get_balanced_semantic_candidates(
         semantic_table: LanceTable,
         query_vector: np.ndarray,
-        k: int,
+        example_count: int,
         cells: tuple[tuple[str, str], ...],
 ) -> list[dict[str, Any]]:
     """Select the nearest candidates while keeping all group counts balanced."""
@@ -251,9 +251,9 @@ def _get_balanced_semantic_candidates(
 
     row_count = semantic_table.count_rows()
     offset = 0
-    page_size = max(32, 8 * k)
+    page_size = max(32, 8 * example_count)
 
-    while len(selected) < k:
+    while len(selected) < example_count:
         minimum_profession_count = min(profession_counts[profession] for profession in professions)
         minimum_gender_count = min(gender_counts[gender] for gender in genders)
         minimum_cell_count = min(cell_counts[cell] for cell in cells)
@@ -296,9 +296,9 @@ def _get_balanced_semantic_candidates(
         gender_counts[gender] += 1
         cell_counts[(profession, gender)] += 1
 
-    if len(selected) != k:
+    if len(selected) != example_count:
         raise RuntimeError(
-            f'Could not select {k} balanced semantic examples after scanning {offset} of {row_count} training rows'
+            f'Could not select {example_count} balanced semantic examples after scanning {offset} of {row_count} training rows'
         )
 
     return selected
@@ -308,7 +308,7 @@ def retrieve_examples(
         method: str,
         query_vector: np.ndarray,
         semantic_table: LanceTable,
-        k: int,
+        example_count: int,
         cells: tuple[tuple[str, str], ...],
 ) -> list[dict[str, Any]]:
     """Retrieve exact semantic or relevance-first balanced examples."""
@@ -317,16 +317,16 @@ def retrieve_examples(
         raise ValueError(f'Unknown retrieval method {method!r}; expected one of {sorted(RETRIEVAL_METHODS)}')
 
     row_count = semantic_table.count_rows()
-    if k > row_count:
-        raise ValueError(f'Cannot retrieve {k} examples from {row_count} training rows')
+    if example_count > row_count:
+        raise ValueError(f'Cannot retrieve {example_count} examples from {row_count} training rows')
 
     if method == 'semantic':
-        candidates = _get_semantic_candidate_page(semantic_table, query_vector, k)
-        if len(candidates) != k:
-            raise RuntimeError(f'LanceDB returned {len(candidates)} candidates; expected {k}')
+        candidates = _get_semantic_candidate_page(semantic_table, query_vector, example_count)
+        if len(candidates) != example_count:
+            raise RuntimeError(f'LanceDB returned {len(candidates)} candidates; expected {example_count}')
         return candidates
 
-    return _get_balanced_semantic_candidates(semantic_table, query_vector, k, cells)
+    return _get_balanced_semantic_candidates(semantic_table, query_vector, example_count, cells)
 
 
 def order_examples(

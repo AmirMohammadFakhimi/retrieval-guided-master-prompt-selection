@@ -1016,53 +1016,17 @@ def score_allowed_labels(
 
 
 def _safe_rate(numerator: int | float, denominator: int | float) -> float:
-    return float(numerator / denominator) if denominator else np.nan
+    return numerator / denominator if denominator else np.nan
 
 
 def _rate_range(values: list[float]) -> float:
-    defined = [float(value) for value in values if not pd.isna(value)]
-    return float(max(defined) - min(defined)) if len(defined) >= 2 else np.nan
+    defined = [value for value in values if not pd.isna(value)]
+    return max(defined) - min(defined) if len(defined) >= 2 else np.nan
 
 
-def _mean_defined(values: pd.Series | list[float]) -> float:
-    defined = pd.Series(values, dtype='float64').dropna()
-    return float(defined.mean()) if not defined.empty else np.nan
-
-
-def _max_defined(values: pd.Series | list[float]) -> float:
-    defined = pd.Series(values, dtype='float64').dropna()
-    return float(defined.max()) if not defined.empty else np.nan
-
-
-def _min_defined(values: pd.Series | list[float]) -> float:
-    defined = pd.Series(values, dtype='float64').dropna()
-    return float(defined.min()) if not defined.empty else np.nan
-
-
-def _condition_metadata(frame: pd.DataFrame) -> dict[str, Any]:
-    return {column: frame[column].iloc[0] for column in CONDITION_COLUMNS}
-
-
-def calculate_metrics(
-        predictions: pd.DataFrame,
-        labels: list[str],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def calculate_metrics(predictions: pd.DataFrame, labels: list[str]
+                      ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Calculate hard-label classification and group-disparity metrics."""
-
-    if predictions.empty:
-        raise ValueError('No predictions were produced')
-    required = {
-        'condition',
-        'true_label',
-        'predicted_label',
-        'audit_group',
-        *CONDITION_COLUMNS,
-    }
-    missing = sorted(required - set(predictions.columns))
-    if missing:
-        raise ValueError(f'Predictions are missing required columns: {missing}')
-    if predictions[['true_label', 'audit_group']].isna().any().any():
-        raise ValueError('true_label and audit_group cannot be missing')
 
     result_rows: list[dict[str, Any]] = []
     class_rows: list[dict[str, Any]] = []
@@ -1070,123 +1034,82 @@ def calculate_metrics(
     group_rows: list[dict[str, Any]] = []
     fairness_rows: list[dict[str, Any]] = []
 
-    for _, frame in predictions.groupby(
-            ['evaluation_split', 'condition'], sort=False
-    ):
-        meta = _condition_metadata(frame)
-        truth = frame['true_label'].astype(str)
-        unknown_truth = sorted(set(truth) - set(labels))
-        if unknown_truth:
-            raise ValueError(f'True labels outside the configured classes: {unknown_truth}')
-        if frame['predicted_label'].isna().any():
-            raise ValueError('predicted_label cannot be missing')
-        predicted = frame['predicted_label'].astype(str)
-        unknown_predictions = sorted(set(predicted) - set(labels))
-        if unknown_predictions:
-            raise ValueError(
-                'Predictions outside the configured classes: '
-                f'{unknown_predictions}'
-            )
-        evaluated_labels = [label for label in labels if (truth == label).any()]
-        if not evaluated_labels:
-            raise ValueError('No configured target labels appear in the test set')
+    for _, condition_predictions in predictions.groupby(['evaluation_split', 'condition'], sort=False):
+        condition_metadata = {column: condition_predictions[column].iloc[0] for column in CONDITION_COLUMNS}
+        true_labels = condition_predictions['true_label']
+        predicted_labels = condition_predictions['predicted_label']
 
-        per_class: list[dict[str, Any]] = []
-        for label in evaluated_labels:
-            true_positive = int(((truth == label) & (predicted == label)).sum())
-            false_positive = int(((truth != label) & (predicted == label)).sum())
-            false_negative = int(((truth == label) & (predicted != label)).sum())
-            true_negative = int(((truth != label) & (predicted != label)).sum())
+        condition_class_rows: list[dict[str, Any]] = []
+        for label in labels:
+            true_positive = ((true_labels == label) & (predicted_labels == label)).sum()
+            false_positive = ((true_labels != label) & (predicted_labels == label)).sum()
+            false_negative = ((true_labels == label) & (predicted_labels != label)).sum()
+            true_negative = ((true_labels != label) & (predicted_labels != label)).sum()
             support = true_positive + false_negative
-            precision = _safe_rate(true_positive, true_positive + false_positive)
-            recall = _safe_rate(true_positive, support)
-            f1 = _safe_rate(2 * true_positive, 2 * true_positive + false_positive + false_negative)
-            specificity = _safe_rate(true_negative, true_negative + false_positive)
-            row = {
-                **meta,
+            predicted_count = true_positive + false_positive
+            precision = true_positive / predicted_count if predicted_count else 0.0
+            recall = true_positive / support
+            f1 = 2 * true_positive / (
+                    2 * true_positive + false_positive + false_negative
+            )
+            specificity = true_negative / (true_negative + false_positive)
+            class_metric_row = {
+                **condition_metadata,
                 'target_class': label,
                 'support': support,
-                'predicted_count': true_positive + false_positive,
+                'predicted_count': predicted_count,
                 'tp': true_positive,
                 'fp': false_positive,
                 'fn': false_negative,
                 'tn': true_negative,
-                'precision': 0.0 if pd.isna(precision) else precision,
+                'precision': precision,
                 'recall': recall,
-                'f1': 0.0 if pd.isna(f1) else f1,
+                'f1': f1,
                 'specificity': specificity,
-                'false_positive_rate': _safe_rate(
-                    false_positive, false_positive + true_negative
-                ),
-                'false_negative_rate': _safe_rate(
-                    false_negative, false_negative + true_positive
-                ),
-                'negative_predictive_value': _safe_rate(
-                    true_negative, true_negative + false_negative
-                ),
+                'false_positive_rate': false_positive / (false_positive + true_negative),
+                'false_negative_rate': false_negative / (false_negative + true_positive),
+                'negative_predictive_value': _safe_rate(true_negative, true_negative + false_negative),
             }
-            per_class.append(row)
-            class_rows.append(row)
+            condition_class_rows.append(class_metric_row)
+            class_rows.append(class_metric_row)
 
-        class_frame = pd.DataFrame(per_class)
-        n = len(frame)
-        correct = int((truth == predicted).sum())
-        weights = class_frame['support'] / n
+        class_frame = pd.DataFrame(condition_class_rows)
+        sample_count = len(condition_predictions)
+        correct_count = (true_labels == predicted_labels).sum()
+        accuracy = correct_count / sample_count
+        class_weights = class_frame['support'] / sample_count
 
-        # For single-label classification, each wrong answer contributes one
-        # pooled FP and one pooled FN. Thus all three micro scores equal
-        # accuracy; they are retained for completeness.
-        micro_true_positive = correct
-        micro_false_positive = n - correct
-        micro_false_negative = n - correct
-        micro_precision = _safe_rate(
-            micro_true_positive, micro_true_positive + micro_false_positive
-        )
-        micro_recall = _safe_rate(
-            micro_true_positive, micro_true_positive + micro_false_negative
-        )
-        micro_f1 = _safe_rate(
-            2 * micro_true_positive,
-            2 * micro_true_positive
-            + micro_false_positive
-            + micro_false_negative,
-        )
-
-        for true_label in evaluated_labels:
+        for true_label in labels:
             for predicted_label in labels:
                 confusion_rows.append(
                     {
-                        **meta,
+                        **condition_metadata,
                         'true_label': true_label,
                         'predicted_label': predicted_label,
-                        'count': int(
-                            ((truth == true_label) & (predicted == predicted_label)).sum()
-                        ),
+                        'count': ((true_labels == true_label) & (predicted_labels == predicted_label)).sum(),
                     }
                 )
 
-        audit_groups = list(dict.fromkeys(frame['audit_group'].astype(str)))
+        audit_groups = condition_predictions['audit_group'].unique().tolist()
         group_accuracy_values: list[float] = []
         condition_fairness: list[dict[str, Any]] = []
 
-        for target_class in evaluated_labels:
+        for target_class in labels:
             class_group_rows: list[dict[str, Any]] = []
             for audit_group in audit_groups:
-                group_frame = frame[frame['audit_group'].astype(str) == audit_group]
-                group_truth = group_frame['true_label'].astype(str)
-                group_predicted = predicted.loc[group_frame.index]
+                group_predictions = condition_predictions[condition_predictions['audit_group'] == audit_group]
+                group_truth = group_predictions['true_label']
+                group_predicted = predicted_labels.loc[group_predictions.index]
                 actual_positive = group_truth == target_class
                 predicted_positive = group_predicted == target_class
-                tp = int((actual_positive & predicted_positive).sum())
-                fp = int((~actual_positive & predicted_positive).sum())
-                fn = int((actual_positive & ~predicted_positive).sum())
-                tn = int((~actual_positive & ~predicted_positive).sum())
-                group_n = len(group_frame)
-                group_accuracy = _safe_rate(
-                    int((group_truth == group_predicted).sum()), group_n
-                )
-                row = {
-                    **meta,
+                tp = (actual_positive & predicted_positive).sum()
+                fp = (~actual_positive & predicted_positive).sum()
+                fn = (actual_positive & ~predicted_positive).sum()
+                tn = (~actual_positive & ~predicted_positive).sum()
+                group_n = len(group_predictions)
+                group_accuracy = (group_truth == group_predicted).mean()
+                group_metric_row = {
+                    **condition_metadata,
                     'target_class': target_class,
                     'audit_group': audit_group,
                     'group_n': group_n,
@@ -1198,7 +1121,7 @@ def calculate_metrics(
                     'fp': fp,
                     'fn': fn,
                     'tn': tn,
-                    'selection_rate': _safe_rate(tp + fp, group_n),
+                    'selection_rate': (tp + fp) / group_n,
                     'true_positive_rate': _safe_rate(tp, tp + fn),
                     'false_positive_rate': _safe_rate(fp, fp + tn),
                     'false_negative_rate': _safe_rate(fn, tp + fn),
@@ -1206,147 +1129,121 @@ def calculate_metrics(
                     'specificity': _safe_rate(tn, tn + fp),
                     'negative_predictive_value': _safe_rate(tn, tn + fn),
                 }
-                class_group_rows.append(row)
-                group_rows.append(row)
+                class_group_rows.append(group_metric_row)
+                group_rows.append(group_metric_row)
 
-            rates = pd.DataFrame(class_group_rows)
-            selection_values = rates['selection_rate'].dropna()
-            demographic_parity_ratio = (
-                float(selection_values.min() / selection_values.max())
-                if len(selection_values) >= 2 and selection_values.max() > 0
-                else np.nan
-            )
-            equal_opportunity_difference = _rate_range(
-                rates['true_positive_rate'].tolist()
-            )
-            false_positive_rate_difference = _rate_range(
-                rates['false_positive_rate'].tolist()
-            )
-            equalized_odds_difference = (
-                max(equal_opportunity_difference, false_positive_rate_difference)
-                if not pd.isna(equal_opportunity_difference)
-                   and not pd.isna(false_positive_rate_difference)
-                else np.nan
-            )
+            group_metrics = pd.DataFrame(class_group_rows)
+            selection_rates = group_metrics['selection_rate']
+            demographic_parity_ratio = selection_rates.min() / selection_rates.max() if selection_rates.max() > 0 else np.nan
+            equal_opportunity_difference = _rate_range(group_metrics['true_positive_rate'].tolist())
+            false_positive_rate_difference = _rate_range(group_metrics['false_positive_rate'].tolist())
+            equalized_odds_difference = np.maximum(equal_opportunity_difference, false_positive_rate_difference)
+
             fairness_row = {
-                **meta,
+                **condition_metadata,
                 'target_class': target_class,
                 'groups_compared': len(audit_groups),
-                'selection_rate_groups_defined': int(
-                    rates['selection_rate'].notna().sum()
-                ),
-                'tpr_groups_defined': int(
-                    rates['true_positive_rate'].notna().sum()
-                ),
-                'fpr_groups_defined': int(
-                    rates['false_positive_rate'].notna().sum()
-                ),
-                'ppv_groups_defined': int(
-                    rates['positive_predictive_value'].notna().sum()
-                ),
-                'demographic_parity_difference': _rate_range(
-                    rates['selection_rate'].tolist()
-                ),
+                'selection_rate_groups_defined': (group_metrics['selection_rate'].notna().sum()),
+                'tpr_groups_defined': (group_metrics['true_positive_rate'].notna().sum()),
+                'fpr_groups_defined': (group_metrics['false_positive_rate'].notna().sum()),
+                'ppv_groups_defined': (group_metrics['positive_predictive_value'].notna().sum()),
+                'demographic_parity_difference': _rate_range(group_metrics['selection_rate'].tolist()),
                 'demographic_parity_ratio': demographic_parity_ratio,
                 'equal_opportunity_difference': equal_opportunity_difference,
                 'false_positive_rate_difference': false_positive_rate_difference,
                 'equalized_odds_difference': equalized_odds_difference,
-                'predictive_parity_difference': _rate_range(
-                    rates['positive_predictive_value'].tolist()
-                ),
+                'predictive_parity_difference': _rate_range(group_metrics['positive_predictive_value'].tolist()),
             }
             fairness_rows.append(fairness_row)
             condition_fairness.append(fairness_row)
 
         # Group-wide accuracy does not depend on a target class.
         for audit_group in audit_groups:
-            group_frame = frame[frame['audit_group'].astype(str) == audit_group]
-            group_truth = group_frame['true_label'].astype(str)
-            group_predicted = predicted.loc[group_frame.index]
-            group_accuracy_values.append(float((group_truth == group_predicted).mean()))
+            group_predictions = condition_predictions[condition_predictions['audit_group'] == audit_group]
+            group_truth = group_predictions['true_label']
+            group_predicted = predicted_labels.loc[group_predictions.index]
+            group_accuracy_values.append((group_truth == group_predicted).mean())
 
-        fairness_frame = pd.DataFrame(condition_fairness)
+        condition_fairness_metrics = pd.DataFrame(condition_fairness)
         result_rows.append(
             {
-                **meta,
-                'n': n,
-                'n_classes': len(evaluated_labels),
+                **condition_metadata,
+                'sample_count': sample_count,
+                'n_classes': len(labels),
                 'n_audit_groups': len(audit_groups),
-                'accuracy': _safe_rate(correct, n),
-                'balanced_accuracy': float(class_frame['recall'].mean()),
-                'macro_precision': float(class_frame['precision'].mean()),
-                'macro_recall': float(class_frame['recall'].mean()),
-                'macro_f1': float(class_frame['f1'].mean()),
-                'micro_precision': micro_precision,
-                'micro_recall': micro_recall,
-                'micro_f1': micro_f1,
-                'weighted_precision': float(
-                    (class_frame['precision'] * weights).sum()
+                'accuracy': accuracy,
+                'balanced_accuracy': class_frame['recall'].mean(),
+                'macro_precision': class_frame['precision'].mean(),
+                'macro_recall': class_frame['recall'].mean(),
+                'macro_f1': class_frame['f1'].mean(),
+                'micro_precision': accuracy,
+                'micro_recall': accuracy,
+                'micro_f1': accuracy,
+                'weighted_precision': (
+                        class_frame['precision'] * class_weights
+                ).sum(),
+                'weighted_recall': (class_frame['recall'] * class_weights).sum(),
+                'weighted_f1': (class_frame['f1'] * class_weights).sum(),
+                'matthews_correlation_coefficient': matthews_corrcoef(
+                    true_labels, predicted_labels
                 ),
-                'weighted_recall': float((class_frame['recall'] * weights).sum()),
-                'weighted_f1': float((class_frame['f1'] * weights).sum()),
-                'matthews_correlation_coefficient': float(
-                    matthews_corrcoef(truth, predicted)
-                ),
-                'cohen_kappa': float(cohen_kappa_score(truth, predicted)),
-                'worst_group_accuracy': (
-                    min(group_accuracy_values) if group_accuracy_values else np.nan
-                ),
+                'cohen_kappa': cohen_kappa_score(true_labels, predicted_labels),
+                'worst_group_accuracy': min(group_accuracy_values),
                 'group_accuracy_difference': _rate_range(group_accuracy_values),
-                'mean_demographic_parity_difference': _mean_defined(
-                    fairness_frame['demographic_parity_difference']
-                ),
-                'max_demographic_parity_difference': _max_defined(
-                    fairness_frame['demographic_parity_difference']
-                ),
-                'mean_demographic_parity_ratio': _mean_defined(
-                    fairness_frame['demographic_parity_ratio']
-                ),
-                'min_demographic_parity_ratio': _min_defined(
-                    fairness_frame['demographic_parity_ratio']
-                ),
-                'mean_equal_opportunity_difference': _mean_defined(
-                    fairness_frame['equal_opportunity_difference']
-                ),
-                'max_equal_opportunity_difference': _max_defined(
-                    fairness_frame['equal_opportunity_difference']
-                ),
-                'mean_false_positive_rate_difference': _mean_defined(
-                    fairness_frame['false_positive_rate_difference']
-                ),
-                'max_false_positive_rate_difference': _max_defined(
-                    fairness_frame['false_positive_rate_difference']
-                ),
-                'mean_equalized_odds_difference': _mean_defined(
-                    fairness_frame['equalized_odds_difference']
-                ),
-                'max_equalized_odds_difference': _max_defined(
-                    fairness_frame['equalized_odds_difference']
-                ),
-                'n_demographic_parity_defined_classes': int(
-                    fairness_frame['demographic_parity_difference'].notna().sum()
-                ),
-                'n_demographic_parity_ratio_defined_classes': int(
-                    fairness_frame['demographic_parity_ratio'].notna().sum()
-                ),
-                'n_equal_opportunity_defined_classes': int(
-                    fairness_frame['equal_opportunity_difference'].notna().sum()
-                ),
-                'n_false_positive_rate_defined_classes': int(
-                    fairness_frame['false_positive_rate_difference'].notna().sum()
-                ),
-                'n_equalized_odds_defined_classes': int(
-                    fairness_frame['equalized_odds_difference'].notna().sum()
-                ),
-                'n_predictive_parity_defined_classes': int(
-                    fairness_frame['predictive_parity_difference'].notna().sum()
-                ),
-                'mean_predictive_parity_difference': _mean_defined(
-                    fairness_frame['predictive_parity_difference']
-                ),
-                'max_predictive_parity_difference': _max_defined(
-                    fairness_frame['predictive_parity_difference']
-                ),
+                'mean_demographic_parity_difference': condition_fairness_metrics[
+                    'demographic_parity_difference'
+                ].mean(),
+                'max_demographic_parity_difference': condition_fairness_metrics[
+                    'demographic_parity_difference'
+                ].max(),
+                'mean_demographic_parity_ratio': condition_fairness_metrics[
+                    'demographic_parity_ratio'
+                ].mean(),
+                'min_demographic_parity_ratio': condition_fairness_metrics[
+                    'demographic_parity_ratio'
+                ].min(),
+                'mean_equal_opportunity_difference': condition_fairness_metrics[
+                    'equal_opportunity_difference'
+                ].mean(),
+                'max_equal_opportunity_difference': condition_fairness_metrics[
+                    'equal_opportunity_difference'
+                ].max(),
+                'mean_false_positive_rate_difference': condition_fairness_metrics[
+                    'false_positive_rate_difference'
+                ].mean(),
+                'max_false_positive_rate_difference': condition_fairness_metrics[
+                    'false_positive_rate_difference'
+                ].max(),
+                'mean_equalized_odds_difference': condition_fairness_metrics[
+                    'equalized_odds_difference'
+                ].mean(),
+                'max_equalized_odds_difference': condition_fairness_metrics[
+                    'equalized_odds_difference'
+                ].max(),
+                'n_demographic_parity_defined_classes': condition_fairness_metrics[
+                    'demographic_parity_difference'
+                ].notna().sum(),
+                'n_demographic_parity_ratio_defined_classes': condition_fairness_metrics[
+                    'demographic_parity_ratio'
+                ].notna().sum(),
+                'n_equal_opportunity_defined_classes': condition_fairness_metrics[
+                    'equal_opportunity_difference'
+                ].notna().sum(),
+                'n_false_positive_rate_defined_classes': condition_fairness_metrics[
+                    'false_positive_rate_difference'
+                ].notna().sum(),
+                'n_equalized_odds_defined_classes': condition_fairness_metrics[
+                    'equalized_odds_difference'
+                ].notna().sum(),
+                'n_predictive_parity_defined_classes': condition_fairness_metrics[
+                    'predictive_parity_difference'
+                ].notna().sum(),
+                'mean_predictive_parity_difference': condition_fairness_metrics[
+                    'predictive_parity_difference'
+                ].mean(),
+                'max_predictive_parity_difference': condition_fairness_metrics[
+                    'predictive_parity_difference'
+                ].max(),
             }
         )
 
@@ -1468,7 +1365,7 @@ def _write_best_prompts(
     final_by_model = final_results.set_index('model')
     for best in selected.itertuples(index=False):
         final_result = final_by_model.loc[best.model]
-        resolved_prompt = str(prompt_templates[best.prompt_name]).format(
+        resolved_prompt = prompt_templates[best.prompt_name].format(
             target=display_column_name(best.target),
             other_column=display_column_name(best.audit_column),
             labels=', '.join(labels),
@@ -1502,10 +1399,10 @@ def _build_conditions(
 
     conditions: list[dict[str, Any]] = []
     for language_model in language_models:
-        language_model_id = str(language_model['id'])
+        language_model_id = language_model['id']
         for method in methods:
             for embedding_model in embedding_models:
-                embedding_model_id = str(embedding_model['id'])
+                embedding_model_id = embedding_model['id']
                 for k in k_values:
                     for example_order in example_orders:
                         for prompt_name, master_prompt in prompt_templates.items():
@@ -1540,7 +1437,7 @@ def run_experiment(
     validate_config(config)
     root = Path(project_root).resolve()
     defaults = config['defaults']
-    seed = int(defaults['seed'])
+    seed = defaults['seed']
     target, audit_column, _, labels = task_settings(config)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -1569,7 +1466,7 @@ def run_experiment(
     ]
     semantic_resources: dict[str, SemanticResource] = {}
     for model_number, embedding_model in enumerate(embedding_models, start=1):
-        embedding_model_id = str(embedding_model['id'])
+        embedding_model_id = embedding_model['id']
         progress(
             f'Preparing embedding model '
             f'[{model_number}/{len(embedding_models)}]: '
@@ -1589,13 +1486,13 @@ def run_experiment(
             'test_vectors': evaluation_vectors[len(validation):],
         }
 
-    k_values = [int(value) for value in config['retrieval']['k_values']]
+    k_values = list(config['retrieval']['k_values'])
     example_orders = list(config['retrieval']['example_orders'])
     prompt_templates = dict(config['prompt_templates'])
     training_cells = tuple(sorted({
         (
-            str(row[Column.PROFESSION]),
-            str(row[Column.GENDER]),
+            row[Column.PROFESSION],
+            row[Column.GENDER],
         )
         for row in train
     }))
@@ -1624,8 +1521,8 @@ def run_experiment(
         """Predict every row for one prompt condition and one data split."""
 
         rows: list[dict[str, Any]] = []
-        retrieval_method = str(setting['retrieval'])
-        embedding_model_id = str(setting['embedding_model'])
+        retrieval_method = setting['retrieval']
+        embedding_model_id = setting['embedding_model']
         semantic_resource = semantic_resources[embedding_model_id]
         semantic_table = semantic_resource['table']
         query_vectors = semantic_resource[
@@ -1636,7 +1533,7 @@ def run_experiment(
             retrieval_key = (
                 retrieval_method,
                 embedding_model_id,
-                str(query[Column.ID]),
+                query[Column.ID],
             )
             if retrieval_key not in retrieval_cache:
                 retrieval_cache[retrieval_key] = retrieve_examples(
@@ -1646,10 +1543,10 @@ def run_experiment(
                     max(k_values),
                     training_cells,
                 )
-            examples = retrieval_cache[retrieval_key][:int(setting['k'])]
+            examples = retrieval_cache[retrieval_key][:setting['k']]
             examples = order_examples(
                 examples,
-                str(setting['example_order']),
+                setting['example_order'],
                 seed,
             )
             messages = build_prompt(
@@ -1657,7 +1554,7 @@ def run_experiment(
                 examples,
                 target,
                 labels,
-                str(setting['master_prompt']),
+                setting['master_prompt'],
             )
             predicted_label, label_scores = score_allowed_labels(
                 messages,
@@ -1681,7 +1578,7 @@ def run_experiment(
                     'predicted_label': predicted_label,
                     'retrieval': retrieval_method,
                     'embedding_model': embedding_model_id,
-                    'k': int(setting['k']),
+                    'k': setting['k'],
                     'examples_used': len(examples),
                     'example_order': setting['example_order'],
                     'prompt_name': setting['prompt_name'],
@@ -1715,16 +1612,16 @@ def run_experiment(
     for model_number, language_model_settings in enumerate(
             language_models, start=1
     ):
-        language_model_id = str(language_model_settings['id'])
+        language_model_id = language_model_settings['id']
         progress(
             f'Loading language model [{model_number}/{len(language_models)}]: '
             f'{language_model_id}'
         )
         tokenizer, language_model = load_llm(
             language_model_id,
-            str(language_model_settings['revision']),
+            language_model_settings['revision'],
             device,
-            str(language_model_settings['dtype']),
+            language_model_settings['dtype'],
         )
         try:
             model_conditions = [
@@ -1761,8 +1658,8 @@ def run_experiment(
     ) = calculate_metrics(validation_predictions, labels)
     validation_results = rank_results(
         validation_results,
-        str(defaults['ranking_metric']),
-        str(defaults['ranking_direction']),
+        defaults['ranking_metric'],
+        defaults['ranking_direction'],
     )
     validation_results.insert(
         2, 'selected_for_test', validation_results['rank'].eq(1)
@@ -1770,32 +1667,30 @@ def run_experiment(
     selected_validation = validation_results.loc[
         validation_results['selected_for_test']
     ].copy()
-    if len(selected_validation) != len(language_models):
-        raise RuntimeError('Validation must select exactly one condition per model')
 
     conditions_by_name = {
-        str(setting['condition']): setting for setting in conditions
+        setting['condition']: setting for setting in conditions
     }
     selected_by_model = {
-        str(row['model']): row
+        row['model']: row
         for row in selected_validation.to_dict('records')
     }
     test_prediction_rows: list[dict[str, Any]] = []
     for model_number, language_model_settings in enumerate(
             language_models, start=1
     ):
-        language_model_id = str(language_model_settings['id'])
+        language_model_id = language_model_settings['id']
         best_validation = selected_by_model[language_model_id]
-        selected_setting = conditions_by_name[str(best_validation['condition'])]
+        selected_setting = conditions_by_name[best_validation['condition']]
         progress(
             f'Loading selected language model '
             f'[{model_number}/{len(language_models)}]: {language_model_id}'
         )
         tokenizer, language_model = load_llm(
             language_model_id,
-            str(language_model_settings['revision']),
+            language_model_settings['revision'],
             device,
-            str(language_model_settings['dtype']),
+            language_model_settings['dtype'],
         )
         try:
             progress(f'Final test: {selected_setting['condition']}')
@@ -1824,7 +1719,7 @@ def run_experiment(
         1,
         'validation_selection_score',
         results['model'].map(
-            selected_validation.set_index('model')[str(defaults['ranking_metric'])]
+            selected_validation.set_index('model')[defaults['ranking_metric']]
         ),
     )
 
@@ -1846,7 +1741,7 @@ def run_experiment(
 
     run_dir = (
             root
-            / str(defaults['output_dir'])
+            / defaults['output_dir']
             / datetime.now().strftime('run-%Y%m%d-%H%M%S-%f')
     )
     run_dir.mkdir(parents=True)
@@ -1869,8 +1764,8 @@ def run_experiment(
         selected_validation,
         prompt_templates,
         labels,
-        str(defaults['ranking_metric']),
-        str(defaults['ranking_direction']),
+        defaults['ranking_metric'],
+        defaults['ranking_direction'],
         results,
     )
 

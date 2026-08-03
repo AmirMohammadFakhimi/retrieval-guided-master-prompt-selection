@@ -1,6 +1,6 @@
 numpy==2.5.1
 pandas==3.0.5
-pandas-stubs==3.0.3.260530
+pandas-stubs==3.0.5.260730
 PyYAML==6.0.3
 beautifulsoup4==4.15.0
 ftfy==6.3.1

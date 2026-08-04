@@ -16,6 +16,8 @@ defaults:
   # Validation metric that selects one prompt per language model for final test.
   # Final quality-oriented choice: macro_f1. For a separate fairness-oriented
   # analysis use max_equalized_odds_difference with direction: minimize.
+  # Standard aliases such as accuracy, micro_f1, macro_recall, and
+  # balanced_accuracy resolve to their shared formula-equivalent result column.
   ranking_metric: macro_f1
 
   # maximize for quality/ratio metrics; minimize for error/difference metrics.

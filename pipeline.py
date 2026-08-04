@@ -396,6 +396,7 @@ def run_experiment(
     validate_config(config)
     root = Path(project_root).resolve()
     defaults = config['defaults']
+    ranking_metric = evaluation.resolve_metric_column(defaults['ranking_metric'])
     target, audit_column, _, labels = dataset.task_settings(config)
 
     inference_settings = config['inference']
@@ -504,7 +505,7 @@ def run_experiment(
     ) = evaluation.calculate_metrics(validation_predictions, labels)
     validation_results = evaluation.rank_results(
         validation_results,
-        defaults['ranking_metric'],
+        ranking_metric,
         defaults['ranking_direction'],
     )
     validation_results.insert(
@@ -567,7 +568,7 @@ def run_experiment(
         1,
         'validation_selection_score',
         results['language_model'].map(
-            selected_validation.set_index('language_model')[defaults['ranking_metric']]
+            selected_validation.set_index('language_model')[ranking_metric]
         ),
     )
 

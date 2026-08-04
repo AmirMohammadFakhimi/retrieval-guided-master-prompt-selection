@@ -5,6 +5,7 @@ from pathlib import Path
 import gradio as gr
 import yaml
 
+import evaluation
 from pipeline import run_experiment
 
 
@@ -26,7 +27,8 @@ def run_from_yaml(config_text: str):
             validation_results_frame["selected_for_test"].astype(bool)
         ].copy()
         final = output["results"].copy()
-        ranking_metric = config["defaults"]["ranking_metric"]
+        configured_ranking_metric = config["defaults"]["ranking_metric"]
+        ranking_metric = evaluation.resolve_metric_column(configured_ranking_metric)
         language_model_ids = [
             entry["id"]
             for entry in config["inference"]["language_models"]
@@ -81,13 +83,14 @@ def run_from_yaml(config_text: str):
             selection_lines.append(
                 f"- **{language_model_id}**: "
                 f"`{selected_row['condition']}` — validation "
-                f"`{ranking_metric}={selected_row[ranking_metric]}`; final test "
-                f"`{ranking_metric}={final_row[ranking_metric]}`"
+                f"`{configured_ranking_metric}={selected_row[ranking_metric]}`; "
+                f"final test `{configured_ranking_metric}={final_row[ranking_metric]}`"
             )
         status = "\n".join(
             [
                 f"Finished. Results: `{output['run_dir']}`  ",
-                f"One validation winner per language model on `{ranking_metric}`:",
+                f"One validation winner per language model on "
+                f"`{configured_ranking_metric}`:",
                 "",
                 *selection_lines,
                 "",
@@ -166,20 +169,115 @@ The YAML below is the single source of settings.
 - `device: mps` requires Apple GPU support and fails instead of falling back to
   CPU for these large language models.
 
-Key formulas:
+## Metric notation and formulas
+
+Here, $c$ is a target class, $g$ is an audit group, $K$ is the number of target
+classes, $N$ is the total number of evaluated rows, $N_g$ is the number in group
+$g$, and $n_c$ is the true support of class $c$. $D_m$ is the set of classes
+where metric $m$ is defined. For the one-vs-rest view of class $c$, $TP$, $FP$,
+$FN$, and $TN$ are true-positive, false-positive, false-negative, and
+true-negative counts.
 
 $$
-Accuracy=\frac{\#correct}{N},\qquad
+Precision_c=PPV_c=\frac{TP_c}{TP_c+FP_c},\quad
+Recall_c=TPR_c=\frac{TP_c}{TP_c+FN_c},\quad
 F1_c=\frac{2TP_c}{2TP_c+FP_c+FN_c}
 $$
 
 $$
-DPDiff_c=\max_g P(\hat Y=c\mid A=g)-\min_g P(\hat Y=c\mid A=g)
+Specificity_c=TNR_c=\frac{TN_c}{TN_c+FP_c},\quad
+FPR_c=\frac{FP_c}{FP_c+TN_c},\quad
+FNR_c=\frac{FN_c}{FN_c+TP_c},\quad
+NPV_c=\frac{TN_c}{TN_c+FN_c}
+$$
+
+For any class metric $m_c$, undefined values are omitted from its aggregate:
+
+$$
+Accuracy=\frac{\sum_c TP_c}{N},\quad
+Macro(m)=\frac{1}{|D_m|}\sum_{c\in D_m}m_c,\quad
+Weighted(m)=\frac{\sum_{c\in D_m}n_cm_c}{\sum_{c\in D_m}n_c}
+$$
+
+When $m$ is defined for all classes, $|D_m|=K$.
+
+In single-label multiclass classification, let $T=\sum_cTP_c$ be the number of
+correct rows and let $E=\sum_cFP_c=\sum_cFN_c$ be the number of errors, so
+$N=T+E$. Therefore:
+
+$$
+MicroPrecision=\frac{T}{T+E}
+=MicroRecall=MicroF1=Accuracy
 $$
 
 $$
-EqualOpportunityDiff_c=\max_g TPR_{c,g}-\min_g TPR_{c,g}
+WeightedRecall=\frac{1}{N}\sum_{c:n_c>0} n_c\frac{TP_c}{n_c}
+=\frac{\sum_cTP_c}{N}=Accuracy,\qquad
+BalancedAccuracy=\frac{1}{|D_R|}\sum_{c\in D_R}Recall_c=MacroRecall
 $$
+
+$D_R$ is the set of classes whose recall is defined.
+
+These equalities hold by formula for this task, so each family has one result
+column containing all equivalent metric names.
+
+For the multiclass confusion matrix $C$, let $s=\sum_{ij}C_{ij}$,
+$q=\operatorname{trace}(C)$, $p_k=\sum_iC_{ik}$ be the predicted total for
+class $k$, and $t_k=\sum_jC_{kj}$ be its true total:
+
+$$
+MCC=\frac{qs-\sum_kp_kt_k}
+{\sqrt{(s^2-\sum_kp_k^2)(s^2-\sum_kt_k^2)}}
+$$
+
+For Cohen's kappa, $p_o=Accuracy$ is observed agreement and
+$p_e=\sum_k(t_k/s)(p_k/s)$ is chance-expected agreement:
+
+$$\kappa=\frac{p_o-p_e}{1-p_e}$$
+
+For class $c$ within audit group $g$:
+
+$$
+SR_{c,g}=\frac{TP_{c,g}+FP_{c,g}}{N_g},\quad
+TPR_{c,g}=\frac{TP_{c,g}}{TP_{c,g}+FN_{c,g}},\quad
+FPR_{c,g}=\frac{FP_{c,g}}{FP_{c,g}+TN_{c,g}}
+$$
+
+$$
+PPV_{c,g}=\frac{TP_{c,g}}{TP_{c,g}+FP_{c,g}},\qquad
+Accuracy_g=\frac{\#\text{ correct rows in }g}{N_g}
+$$
+
+Let $Range_g(x)=\max_gx_g-\min_gx_g$. The classwise disparities are:
+
+$$
+DPDiff_c=Range_g(SR_{c,g}),\quad
+DPRatio_c=\frac{\min_gSR_{c,g}}{\max_gSR_{c,g}},\quad
+EqualOpportunityDiff_c=Range_g(TPR_{c,g})
+$$
+
+$$
+FPRDiff_c=Range_g(FPR_{c,g}),\quad
+EqualizedOddsDiff_c=\max(EqualOpportunityDiff_c,FPRDiff_c),\quad
+PredictiveParityDiff_c=Range_g(PPV_{c,g})
+$$
+
+$WorstGroupAccuracy=\min_gAccuracy_g$ and
+$GroupAccuracyDiff=Range_g(Accuracy_g)$. For classwise disparity $d_c$, let
+$D_d$ be the classes where it is defined:
+
+$$
+MeanDisparity(d)=\frac{1}{|D_d|}\sum_{c\in D_d}d_c,\quad
+WorstDifference(d)=\max_{c\in D_d}d_c,\quad
+WorstDPRatio=\min_{c\in D_d}DPRatio_c
+$$
+
+The corresponding defined-class count is $|D_d|$. A zero denominator produces
+a blank/`NaN`, not a misleading zero, and a disparity requires at least two
+defined groups.
+
+For label scoring, $T_c$ is the sequence of tokens in allowed label $c$, $t_j$
+is its $j$-th token, and $t_{&lt;j}$ denotes its earlier tokens:
 
 $$
 score(c)=\frac{1}{|T_c|}\sum_j
@@ -187,8 +285,8 @@ score(c)=\frac{1}{|T_c|}\sum_j
 \hat c=\arg\max_{c\in labels}score(c)
 $$
 
-Lower disparity is not useful by itself if predictive quality is poor. The
-README explains every setting, metric, denominator, and interpretation.
+Lower disparity is not useful by itself if predictive quality is poor. Label
+scores are relative ranking scores, not calibrated probabilities.
 """
         )
         config_text = gr.Code(

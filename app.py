@@ -55,7 +55,7 @@ def run_from_yaml(config_text: str):
             "audit_group",
             "predicted_label",
             "condition",
-            "retrieval",
+            "retrieval_method",
             "embedding_model",
             "language_model",
             "example_count",
@@ -139,9 +139,9 @@ The YAML below is the single source of settings.
   prompts longer.
 - `semantic` takes the exact nearest biographies by cosine similarity.
 - `balanced_semantic` repeatedly takes the nearest currently feasible
-  biography while keeping profession, gender, and joint-cell counts as even
-  as the example count permits. It expands the LanceDB search automatically
-  when necessary.
+  biography while keeping profession, gender, and joint profession-gender pair
+  counts as even as the example count permits. It expands the LanceDB search
+  automatically when necessary.
 - Every `embedding_models` entry creates separate `semantic` and
   `balanced_semantic` conditions.
 - Every `inference.language_models` entry creates a separate language model

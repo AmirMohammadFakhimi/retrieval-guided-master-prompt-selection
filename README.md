@@ -52,7 +52,7 @@ Important outputs in each timestamped result folder:
 
 - `validation_results.csv`: all conditions and one selected row per language model;
 - `results.csv`: one independent final-test row per language model;
-- `predictions.csv`: prompts, retrieved-example IDs, label scores, and labels;
+- `predictions.csv`: prompts, retrieved-example metadata, seeds, label scores, and labels;
 - `best_prompts.txt`: the selected prompt for each language model;
 - class, confusion, group, fairness, data-composition, and plot outputs.
 

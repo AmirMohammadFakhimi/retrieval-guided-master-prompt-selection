@@ -57,7 +57,7 @@ retrieval:
   # Retrieval support conditions for the master-prompt comparison. semantic
   # takes the nearest hard_text rows. balanced_semantic repeatedly takes the
   # nearest currently feasible row while keeping profession, gender, and joint
-  # cell counts as even as possible.
+  # profession-gender pair counts as even as possible.
   methods: [semantic, balanced_semantic]
 
   # Numbers of labelled few-shot examples inserted into each prompt.

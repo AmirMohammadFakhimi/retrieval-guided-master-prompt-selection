@@ -81,6 +81,7 @@ def prepare_semantic_retrieval(
     batch_size = embedding_model['batch_size']
     dtype_name = embedding_model['dtype']
     query_prompt = embedding_model['query_prompt']
+
     database = lancedb.connect(database_path)
     table_name = f'semantic_{embedding_model_id.lower().replace("/", "_")}'
 
@@ -232,19 +233,19 @@ def _get_balanced_semantic_candidates(
         semantic_table: LanceTable,
         query_vector: np.ndarray,
         example_count: int,
-        cells: tuple[tuple[str, str], ...],
+        profession_gender_pairs: tuple[tuple[str, str], ...],
 ) -> list[dict[str, Any]]:
-    """Select the nearest candidates while keeping all group counts balanced."""
+    """Select nearest candidates while balancing profession, gender, and pairs."""
 
-    if not cells:
-        raise ValueError('Balanced semantic retrieval requires training cells')
+    if not profession_gender_pairs:
+        raise ValueError('Balanced semantic retrieval requires profession-gender pairs')
 
-    professions = tuple(sorted({profession for profession, _ in cells}))
-    genders = tuple(sorted({gender for _, gender in cells}))
+    professions = tuple(sorted({profession for profession, _ in profession_gender_pairs}))
+    genders = tuple(sorted({gender for _, gender in profession_gender_pairs}))
 
     profession_counts = Counter()
     gender_counts = Counter()
-    cell_counts = Counter()
+    pair_counts = Counter()
 
     unselected_candidates: list[dict[str, Any]] = []
     selected: list[dict[str, Any]] = []
@@ -256,7 +257,7 @@ def _get_balanced_semantic_candidates(
     while len(selected) < example_count:
         minimum_profession_count = min(profession_counts[profession] for profession in professions)
         minimum_gender_count = min(gender_counts[gender] for gender in genders)
-        minimum_cell_count = min(cell_counts[cell] for cell in cells)
+        minimum_pair_count = min(pair_counts[pair] for pair in profession_gender_pairs)
 
         first_eligible_index = next(
             (
@@ -264,7 +265,7 @@ def _get_balanced_semantic_candidates(
                 for index, candidate in enumerate(unselected_candidates)
                 if profession_counts[candidate[Column.PROFESSION]] == minimum_profession_count
                    and gender_counts[candidate[Column.GENDER]] == minimum_gender_count
-                   and cell_counts[(candidate[Column.PROFESSION], candidate[Column.GENDER])] == minimum_cell_count
+                   and pair_counts[(candidate[Column.PROFESSION], candidate[Column.GENDER])] == minimum_pair_count
             ),
             None,
         )
@@ -294,7 +295,7 @@ def _get_balanced_semantic_candidates(
         selected.append(candidate)
         profession_counts[profession] += 1
         gender_counts[gender] += 1
-        cell_counts[(profession, gender)] += 1
+        pair_counts[(profession, gender)] += 1
 
     if len(selected) != example_count:
         raise RuntimeError(
@@ -305,28 +306,30 @@ def _get_balanced_semantic_candidates(
 
 
 def retrieve_examples(
-        method: str,
+        retrieval_method: str,
         query_vector: np.ndarray,
         semantic_table: LanceTable,
         example_count: int,
-        cells: tuple[tuple[str, str], ...],
+        training_profession_gender_pairs: tuple[tuple[str, str], ...],
 ) -> list[dict[str, Any]]:
     """Retrieve exact semantic or relevance-first balanced examples."""
 
-    if method not in RETRIEVAL_METHODS:
-        raise ValueError(f'Unknown retrieval method {method!r}; expected one of {sorted(RETRIEVAL_METHODS)}')
+    if retrieval_method not in RETRIEVAL_METHODS:
+        raise ValueError(f'Unknown retrieval method {retrieval_method!r}; expected one of {sorted(RETRIEVAL_METHODS)}')
 
     row_count = semantic_table.count_rows()
     if example_count > row_count:
         raise ValueError(f'Cannot retrieve {example_count} examples from {row_count} training rows')
 
-    if method == 'semantic':
+    if retrieval_method == 'semantic':
         candidates = _get_semantic_candidate_page(semantic_table, query_vector, example_count)
         if len(candidates) != example_count:
             raise RuntimeError(f'LanceDB returned {len(candidates)} candidates; expected {example_count}')
         return candidates
 
-    return _get_balanced_semantic_candidates(semantic_table, query_vector, example_count, cells)
+    return _get_balanced_semantic_candidates(
+        semantic_table, query_vector, example_count, training_profession_gender_pairs
+    )
 
 
 def order_examples(

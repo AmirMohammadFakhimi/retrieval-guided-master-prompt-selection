@@ -12,7 +12,7 @@ CONDITION_COLUMNS = [
     'evaluation_split',
     'target',
     'audit_column',
-    'retrieval',
+    'retrieval_method',
     'embedding_model',
     'example_count',
     'example_order',
@@ -306,7 +306,7 @@ def plot_results(
     ).reset_index(drop=True)
     labels = [
         (
-            f'language_model={row.language_model}, {row.retrieval}, '
+            f'language_model={row.language_model}, {row.retrieval_method}, '
             f'embedding={row.embedding_model}, '
             f'examples={row.example_count}, {row.prompt_name}, {row.example_order}'
         )
@@ -384,7 +384,7 @@ def write_best_prompts(
             f'({ranking_direction})\n'
             f'Validation score: {getattr(best, ranking_metric)}\n'
             f'Final test score: {final_result[ranking_metric]}\n'
-            f'Retrieval: {best.retrieval}\n'
+            f'Retrieval method: {best.retrieval_method}\n'
             f'Embedding model: {best.embedding_model}\n'
             f'Examples: {best.example_count}\n'
             f'Example order: {best.example_order}\n'

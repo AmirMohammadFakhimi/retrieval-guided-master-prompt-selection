@@ -172,7 +172,7 @@ def _download_data(config: dict[str, Any], destination: Path) -> list[dict[str, 
     """Download, shuffle, clean, and cache every official source split."""
 
     dataset_config = config['dataset']
-    shuffle_seed = int(dataset_config['shuffle_seed'])
+    shuffle_seed = dataset_config['shuffle_seed']
     rows: list[dict[str, Any]] = []
 
     for split_name in ('train', 'dev', 'test'):

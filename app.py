@@ -66,6 +66,10 @@ def run_from_yaml(config_text: str):
             "label_scores",
         ]
         predictions = output["predictions"]
+        plot_gallery = [
+            (str(path), name.replace("_", " ").title())
+            for name, path in output["plots"].items()
+        ]
         selected_conditions = selected["condition"].tolist()
         selected_test_predictions = predictions.loc[
             predictions["evaluation_split"].eq("test")
@@ -107,7 +111,7 @@ def run_from_yaml(config_text: str):
             output["confusion_matrix"],
             output["dataset_counts"],
             selected_test_predictions,
-            str(output["plot"]),
+            plot_gallery,
         )
     except Exception as exc:
         return (f"Error: {type(exc).__name__}: {exc}",) + (None,) * 9
@@ -163,6 +167,9 @@ The YAML below is the single source of settings.
   calibrated probabilities.
 - The selected-test-predictions tab shows allowed-label log-scores for every
   language model's validation-selected condition.
+- The plot gallery compares every validation condition in within-language-model
+  rank order, highlights the selected winners, and provides final-test summary,
+  class, group, fairness, coverage, and confusion plots for those winners.
 - `ranking_metric: macro_f1` with `maximize` is the quality-oriented default.
   To rank by a disparity such as `max_equalized_odds_difference`, use
   `ranking_direction: minimize`.
@@ -330,14 +337,19 @@ scores are relative ranking scores, not calibrated probabilities.
                     label="Final-test labels and scores for all selected language model conditions",
                     interactive=False,
                 )
-            with gr.Tab("Data and plot"):
+            with gr.Tab("Data and plots"):
                 dataset_counts = gr.Dataframe(
                     label="Dataset composition",
                     interactive=False,
                 )
-                plot = gr.Image(
-                    label="Quality and group-disparity comparison",
+                plot_gallery = gr.Gallery(
+                    label="Validation and final-test metric plots",
                     type="filepath",
+                    columns=2,
+                    height=720,
+                    object_fit="contain",
+                    buttons=["download", "download_all", "fullscreen"],
+                    interactive=False,
                 )
 
         # One event keeps the UI easy to follow and calls the exact notebook pipeline.
@@ -354,7 +366,7 @@ scores are relative ranking scores, not calibrated probabilities.
                 confusion_matrix,
                 dataset_counts,
                 predictions,
-                plot,
+                plot_gallery,
             ],
             concurrency_limit=1,
         )

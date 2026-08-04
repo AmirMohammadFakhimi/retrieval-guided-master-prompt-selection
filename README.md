@@ -33,7 +33,8 @@ generation instead of the current label scorer.
 - `pipeline.py`: configuration validation and experiment orchestration;
 - `dataset.py`: Bias-in-Bios loading, cleaning, and target settings;
 - `modeling.py`: retrieval, prompt construction, and language model scoring;
-- `evaluation.py`: metrics, ranking, plots, and selected-prompt reporting.
+- `evaluation.py`: metrics, ranking, and selected-prompt reporting;
+- `plotting.py`: validation comparisons and final-test metric diagnostics.
 
 ## Run
 
@@ -54,7 +55,14 @@ Important outputs in each timestamped result folder:
 - `results.csv`: one independent final-test row per language model;
 - `predictions.csv`: prompts, retrieved-example metadata, seeds, label scores, and labels;
 - `best_prompts.txt`: the selected prompt for each language model;
-- class, confusion, group, fairness, data-composition, and plot outputs.
+- `plots/`: focused validation and final-test plots for every numeric metric,
+  count, support, coverage value, and confusion matrix;
+- class, confusion, group, fairness, and data-composition CSV outputs.
+
+Validation summary plots compare every condition in within-language-model rank
+order and highlight the selected condition. Final-test summaries and detailed
+class, group, fairness, coverage, and confusion diagnostics contain only those
+validation-selected winners.
 
 ## Metric formulas
 

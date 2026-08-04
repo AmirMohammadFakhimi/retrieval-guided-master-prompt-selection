@@ -13,6 +13,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 import dataset
 import evaluation
 import modeling
+import plotting
 
 RetrievalCache = dict[tuple[str, str, str], list[dict[str, Any]]]
 
@@ -365,8 +366,12 @@ def _write_run_outputs(
     with (run_dir / 'config_used.yaml').open('w', encoding='utf-8') as handle:
         yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
 
-    plot_path = run_dir / 'results.png'
-    evaluation.plot_results(result_tables['validation_results'], plot_path)
+    plots = plotting.create_metric_plots(
+        result_tables,
+        run_dir / 'plots',
+        defaults['ranking_metric'],
+    )
+    plot_path = plots['validation_quality_rates']
     best_prompts_path = run_dir / 'best_prompts.txt'
     evaluation.write_best_prompts(
         best_prompts_path,
@@ -381,6 +386,7 @@ def _write_run_outputs(
     return {
         'run_dir': run_dir,
         **result_tables,
+        'plots': plots,
         'plot': plot_path,
         'best_prompts': best_prompts_path,
     }

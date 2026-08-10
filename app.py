@@ -1,8 +1,9 @@
-"""Small Gradio UI for editing config.yaml and running the same pipeline."""
+"""Teaching-oriented Gradio interface for the single-split experiment."""
 
 from pathlib import Path
 
 import gradio as gr
+import pandas as pd
 import yaml
 
 import evaluation
@@ -10,362 +11,261 @@ from pipeline import run_experiment
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+CONFIG_PATH = PROJECT_ROOT / 'config.yaml'
+TABLE_PREVIEW_ROWS = 500
+
+
+def _preview(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep the UI responsive while preserving complete CSV artifacts."""
+
+    return frame.head(TABLE_PREVIEW_ROWS)
 
 
 def run_from_yaml(config_text: str):
-    """Run one experiment from the YAML shown in the editor."""
+    """Run the edited YAML and return split-aware teaching views."""
 
     try:
         config = yaml.safe_load(config_text)
         if not isinstance(config, dict):
-            raise ValueError("The configuration must be a YAML mapping")
+            raise ValueError('The configuration must be a YAML mapping')
+
         output = run_experiment(config, PROJECT_ROOT, print)
-        best_prompts_path = output["best_prompts"]
-        validation_results_frame = output["validation_results"]
-        selected = validation_results_frame.loc[
-            validation_results_frame["selected_for_test"].astype(bool)
-        ].copy()
-        final = output["results"].copy()
-        configured_ranking_metric = config["defaults"]["ranking_metric"]
-        ranking_metric = evaluation.resolve_metric_column(configured_ranking_metric)
+        evaluation_split = output['evaluation_split']
+        results = output['results'].copy()
+        selected = results.loc[results['is_best'].astype(bool)].copy()
         language_model_ids = [
-            entry["id"]
-            for entry in config["inference"]["language_models"]
+            entry['id'] for entry in config['inference']['language_models']
         ]
         if (
-            len(selected) != len(language_model_ids)
-            or selected["language_model"].nunique() != len(language_model_ids)
-            or set(selected["language_model"]) != set(language_model_ids)
+                len(selected) != len(language_model_ids)
+                or selected['language_model'].nunique() != len(language_model_ids)
+                or set(selected['language_model']) != set(language_model_ids)
         ):
             raise ValueError(
-                "Expected exactly one validation-selected condition per language model"
+                f'Expected exactly one best {evaluation_split} condition per '
+                'language model'
             )
-        if (
-            len(final) != len(language_model_ids)
-            or final["language_model"].nunique() != len(language_model_ids)
-            or set(final["language_model"]) != set(language_model_ids)
-        ):
-            raise ValueError(
-                "Expected exactly one independent final-test result per language model"
+
+        configured_metric = config['defaults']['ranking_metric']
+        metric_column = evaluation.resolve_metric_column(configured_metric)
+        selection_lines = []
+        for language_model_id in language_model_ids:
+            row = selected.loc[
+                selected['language_model'].eq(language_model_id)
+            ].iloc[0]
+            selection_lines.append(
+                f'- **{language_model_id}**: rank 1 with '
+                f'`{configured_metric}={row[metric_column]}`'
             )
 
         prediction_columns = [
-            "evaluation_split",
-            "query_id",
-            "true_label",
-            "audit_group",
-            "predicted_label",
-            "condition",
-            "retrieval_method",
-            "embedding_model",
-            "language_model",
-            "example_count",
-            "example_order",
-            "prompt_name",
-            "label_scores",
+            'evaluation_split',
+            'query_id',
+            'true_label',
+            'audit_group',
+            'predicted_label',
+            'condition',
+            'retrieval_method',
+            'embedding_model',
+            'language_model',
+            'example_count',
+            'example_order',
+            'prompt_name',
+            'label_scores',
         ]
-        predictions = output["predictions"]
-        plot_gallery = [
-            (str(path), name.replace("_", " ").title())
-            for name, path in output["plots"].items()
-        ]
-        selected_conditions = selected["condition"].tolist()
-        selected_test_predictions = predictions.loc[
-            predictions["evaluation_split"].eq("test")
-            & predictions["condition"].isin(selected_conditions),
+        selected_predictions = output['predictions'].loc[
+            output['predictions']['condition'].isin(selected['condition']),
             prediction_columns,
         ]
-        selection_lines = []
-        for language_model_id in language_model_ids:
-            selected_row = selected.loc[
-                selected["language_model"].eq(language_model_id)
-            ].iloc[0]
-            final_row = final.loc[
-                final["language_model"].eq(language_model_id)
-            ].iloc[0]
-            selection_lines.append(
-                f"- **{language_model_id}**: "
-                f"`{selected_row['condition']}` — validation "
-                f"`{configured_ranking_metric}={selected_row[ranking_metric]}`; "
-                f"final test `{configured_ranking_metric}={final_row[ranking_metric]}`"
-            )
-        status = "\n".join(
-            [
-                f"Finished. Results: `{output['run_dir']}`  ",
-                f"One validation winner per language model on "
-                f"`{configured_ranking_metric}`:",
-                "",
-                *selection_lines,
-                "",
-                f"Selected prompts file: `{best_prompts_path}`",
-            ]
-        )
+        plot_gallery = [
+            (str(path), name.replace('_', ' ').title())
+            for name, path in output['plots'].items()
+        ]
+        status = '\n'.join([
+            f'Finished the **{evaluation_split}** workflow.  ',
+            f'Complete artifacts: `{output["run_dir"]}`  ',
+            f'Ranking metric: `{configured_metric}` '
+            f'(`{config["defaults"]["ranking_direction"]}`)  ',
+            '',
+            *selection_lines,
+            '',
+            f'Best-prompt report: `{output["best_prompts"]}`  ',
+            f'UI tables show at most {TABLE_PREVIEW_ROWS} rows; CSV files are complete.',
+        ])
+
         return (
             status,
-            validation_results_frame,
-            final,
-            output["class_metrics"],
-            output["fairness_metrics"],
-            output["group_metrics"],
-            output["confusion_matrix"],
-            output["dataset_counts"],
-            selected_test_predictions,
+            selected,
+            _preview(results),
+            _preview(output['class_metrics']),
+            _preview(output['fairness_metrics']),
+            _preview(output['group_metrics']),
+            _preview(output['confusion_matrix']),
+            _preview(selected_predictions),
+            _preview(output['source_dataset_counts']),
+            _preview(output['run_dataset_counts']),
             plot_gallery,
         )
     except Exception as exc:
-        return (f"Error: {type(exc).__name__}: {exc}",) + (None,) * 9
+        return (f'Error: {type(exc).__name__}: {exc}',) + (None,) * 10
 
 
 def build_app():
-    """Construct the UI; the YAML editor exposes every project setting."""
+    """Construct a detailed interface that follows the actual pipeline."""
 
-    with gr.Blocks(title="Prompt search and bias evaluation") as app:
+    with gr.Blocks(title='Retrieval-guided master-prompt selection') as app:
         gr.Markdown(
-            r"""
-# Prompt search and bias evaluation
+            """
+# Retrieval-guided master-prompt selection
 
-The YAML below is the single source of settings.
-
-- `target: profession` supplies **hard_text + gender** and predicts profession.
-- `target: gender` supplies **hard_text + profession** and predicts gender.
-- `dataset.professions` accepts a list or `all`. With profession as the target,
-  it defines allowed labels; with gender as the target, it defines audit groups.
-- `dataset.train_size` accepts a positive integer or `all` for every matching
-  cached training row. It limits the retrieval pool, not the downloaded cache.
-- `dataset.shuffle_seed` reproducibly shuffles the official `train`, `dev`, and
-  `test` splits before row selection. Keep it fixed across experiment seeds.
-- Every language model × retrieval method × embedding model × example count ×
-  example order × master prompt is a validation condition on `dev`. Validation
-  selects one winner **within each language model**; those winners alone run on
-  final `test` rows.
-- `validation_per_profession_gender` is the main search-runtime multiplier.
-  `test_per_profession_gender` controls the independent final evaluation.
-  The thesis defaults are 5 validation and 10 test rows per cell.
-- A larger example count gives the language model more examples but makes
-  prompts longer.
-- `semantic` takes the exact nearest biographies by cosine similarity.
-- `balanced_semantic` repeatedly takes the nearest currently feasible
-  biography while keeping profession, gender, and joint profession-gender pair
-  counts as even as the example count permits. It expands the LanceDB search
-  automatically when necessary.
-- Every `embedding_models` entry creates separate `semantic` and
-  `balanced_semantic` conditions.
-- Every `inference.language_models` entry creates a separate language model
-  condition. The pipeline loads and releases language models sequentially.
-- The master prompt and output constraints form the system message. Retrieved
-  examples become user/assistant demonstrations, and the evaluation biography
-  is the final user message rendered by each language model's native chat
-  template.
-- Qwen uses a 1024-token cap, while BGE retains its architectural 512-token
-  maximum. Both receive their own trained query prefix; cached training
-  biographies remain raw `hard_text`.
-- Each embedding-model ID owns one readable reusable LanceDB table. Delete
-  `data/lancedb/` before changing data or embedding settings.
-- The language model scores every allowed label and chooses the largest mean
-  conditional token log-probability. These scores rank labels; they are not
-  calibrated probabilities.
-- The selected-test-predictions tab shows allowed-label log-scores for every
-  language model's validation-selected condition.
-- The plot gallery compares every validation condition in within-language-model
-  rank order, highlights the selected winners, and provides final-test summary,
-  class, group, fairness, coverage, and confusion plots for those winners.
-- `ranking_metric: macro_f1` with `maximize` is the quality-oriented default.
-  To rank by a disparity such as `max_equalized_odds_difference`, use
-  `ranking_direction: minimize`.
-- `device: mps` requires Apple GPU support and fails instead of falling back to
-  CPU for these large language models.
-
-## Metric notation and formulas
-
-Here, $c$ is a target class, $g$ is an audit group, $K$ is the number of target
-classes, $N$ is the total number of evaluated rows, $N_g$ is the number in group
-$g$, and $n_c$ is the true support of class $c$. $D_m$ is the set of classes
-where metric $m$ is defined. For the one-vs-rest view of class $c$, $TP$, $FP$,
-$FN$, and $TN$ are true-positive, false-positive, false-negative, and
-true-negative counts.
-
-$$
-Precision_c=PPV_c=\frac{TP_c}{TP_c+FP_c},\quad
-Recall_c=TPR_c=\frac{TP_c}{TP_c+FN_c},\quad
-F1_c=\frac{2TP_c}{2TP_c+FP_c+FN_c}
-$$
-
-$$
-Specificity_c=TNR_c=\frac{TN_c}{TN_c+FP_c},\quad
-FPR_c=\frac{FP_c}{FP_c+TN_c},\quad
-FNR_c=\frac{FN_c}{FN_c+TP_c},\quad
-NPV_c=\frac{TN_c}{TN_c+FN_c}
-$$
-
-For any class metric $m_c$, undefined values are omitted from its aggregate:
-
-$$
-Accuracy=\frac{\sum_c TP_c}{N},\quad
-Macro(m)=\frac{1}{|D_m|}\sum_{c\in D_m}m_c,\quad
-Weighted(m)=\frac{\sum_{c\in D_m}n_cm_c}{\sum_{c\in D_m}n_c}
-$$
-
-When $m$ is defined for all classes, $|D_m|=K$.
-
-In single-label multiclass classification, let $T=\sum_cTP_c$ be the number of
-correct rows and let $E=\sum_cFP_c=\sum_cFN_c$ be the number of errors, so
-$N=T+E$. Therefore:
-
-$$
-MicroPrecision=\frac{T}{T+E}
-=MicroRecall=MicroF1=Accuracy
-$$
-
-$$
-WeightedRecall=\frac{1}{N}\sum_{c:n_c>0} n_c\frac{TP_c}{n_c}
-=\frac{\sum_cTP_c}{N}=Accuracy,\qquad
-BalancedAccuracy=\frac{1}{|D_R|}\sum_{c\in D_R}Recall_c=MacroRecall
-$$
-
-$D_R$ is the set of classes whose recall is defined.
-
-These equalities hold by formula for this task, so each family has one result
-column containing all equivalent metric names.
-
-For the multiclass confusion matrix $C$, let $s=\sum_{ij}C_{ij}$,
-$q=\operatorname{trace}(C)$, $p_k=\sum_iC_{ik}$ be the predicted total for
-class $k$, and $t_k=\sum_jC_{kj}$ be its true total:
-
-$$
-MCC=\frac{qs-\sum_kp_kt_k}
-{\sqrt{(s^2-\sum_kp_k^2)(s^2-\sum_kt_k^2)}}
-$$
-
-For Cohen's kappa, $p_o=Accuracy$ is observed agreement and
-$p_e=\sum_k(t_k/s)(p_k/s)$ is chance-expected agreement:
-
-$$\kappa=\frac{p_o-p_e}{1-p_e}$$
-
-For class $c$ within audit group $g$:
-
-$$
-SR_{c,g}=\frac{TP_{c,g}+FP_{c,g}}{N_g},\quad
-TPR_{c,g}=\frac{TP_{c,g}}{TP_{c,g}+FN_{c,g}},\quad
-FPR_{c,g}=\frac{FP_{c,g}}{FP_{c,g}+TN_{c,g}}
-$$
-
-$$
-PPV_{c,g}=\frac{TP_{c,g}}{TP_{c,g}+FP_{c,g}},\qquad
-Accuracy_g=\frac{\#\text{ correct rows in }g}{N_g}
-$$
-
-Let $Range_g(x)=\max_gx_g-\min_gx_g$. The classwise disparities are:
-
-$$
-DPDiff_c=Range_g(SR_{c,g}),\quad
-DPRatio_c=\frac{\min_gSR_{c,g}}{\max_gSR_{c,g}},\quad
-EqualOpportunityDiff_c=Range_g(TPR_{c,g})
-$$
-
-$$
-FPRDiff_c=Range_g(FPR_{c,g}),\quad
-EqualizedOddsDiff_c=\max(EqualOpportunityDiff_c,FPRDiff_c),\quad
-PredictiveParityDiff_c=Range_g(PPV_{c,g})
-$$
-
-$WorstGroupAccuracy=\min_gAccuracy_g$ and
-$GroupAccuracyDiff=Range_g(Accuracy_g)$. For classwise disparity $d_c$, let
-$D_d$ be the classes where it is defined:
-
-$$
-MeanDisparity(d)=\frac{1}{|D_d|}\sum_{c\in D_d}d_c,\quad
-WorstDifference(d)=\max_{c\in D_d}d_c,\quad
-WorstDPRatio=\min_{c\in D_d}DPRatio_c
-$$
-
-The corresponding defined-class count is $|D_d|$. A zero denominator produces
-a blank/`NaN`, not a misleading zero, and a disparity requires at least two
-defined groups.
-
-For label scoring, $T_c$ is the sequence of tokens in allowed label $c$, $t_j$
-is its $j$-th token, and $t_{&lt;j}$ denotes its earlier tokens:
-
-$$
-score(c)=\frac{1}{|T_c|}\sum_j
-\log P(t_j\mid prompt,t_{&lt;j}),\qquad
-\hat c=\arg\max_{c\in labels}score(c)
-$$
-
-Lower disparity is not useful by itself if predictive quality is poor. Label
-scores are relative ranking scores, not calibrated probabilities.
+This interface runs one complete **validation or test** experiment from the
+YAML below. The selected split is used for every condition, metric, ranking,
+plot, and best-prompt report. Loading the other source split for descriptive
+counts never sends it to an encoder or language model.
 """
         )
+
+        with gr.Accordion('1. Experiment flow and split contract', open=True):
+            gr.Markdown(
+                """
+1. Load and normalize profession-filtered `train`, `validation` (source `dev`),
+   and `test` rows.
+2. Cap the retrieval train pool, then balance only the configured evaluation
+   split by profession and gender.
+3. Embed the selected train and evaluation rows.
+4. Load one language model once; for each of its conditions, predict and
+   immediately calculate metrics.
+5. Rank conditions inside that language model and mark exactly one `is_best`.
+6. Release the model, continue to the next model, then write complete tables,
+   plots, and best prompts.
+
+There is no automatic validation-to-test transition. Switching to `test` is a
+deliberate configuration change and runs the same complete condition grid.
+"""
+            )
+
+        with gr.Accordion('2. Configuration values and runtime controls'):
+            gr.Markdown(
+                """
+- `target`: `profession` or `gender`; this changes the held-out label and audit
+  column, so use separate runs.
+- `evaluation_split`: `validation` or `test`.
+- `professions`: `all` or a unique list of at least two supported professions.
+- `train_size`: `all` or a positive integer. This caps retrieval rows only.
+- `evaluation_per_profession_gender`: positive integer. Evaluation rows equal
+  **profession count × 2 genders × this value**.
+- Retrieval methods: `semantic`, `balanced_semantic`. Example order:
+  `as_retrieved`, `reverse`, or `shuffle`.
+- Embedding dtype: `float32`, `float16`, or `bfloat16`; language-model dtype may
+  additionally be `auto`. Device: `auto`, `cuda`, `mps`, or `cpu`.
+- Prompt templates support exactly `{target}`, `{audit_column}`, and `{labels}`.
+- `ranking_metric` must name a numeric results column or a documented alias;
+  choose `maximize` for quality/ratios and `minimize` for error/differences.
+
+Condition count per language model is retrieval methods × embedding models ×
+example counts × example orders × prompt templates. Total prediction calls
+also multiply by selected evaluation rows. Model context and embedding sequence
+limits fail explicitly rather than silently truncating inputs.
+"""
+            )
+
+        with gr.Accordion('3. Methodology and metric formulas'):
+            gr.Markdown(
+                r"""
+`semantic` uses the nearest biographies. `balanced_semantic` takes the nearest
+currently feasible rows while balancing profession, gender, and their joint
+cells. The language model receives the master prompt and allowed-label
+instruction, retrieved user/assistant demonstrations, then the evaluation
+biography. It chooses the allowed label with the largest mean conditional token
+log-probability:
+
+$$
+score(c)=\frac{1}{|T_c|}\sum_j\log P(t_j\mid prompt,t_{<j}),\qquad
+\hat c=\arg\max_c score(c)
+$$
+
+For target class $c$, precision $=TP/(TP+FP)$, recall $=TP/(TP+FN)$, and
+$F1=2TP/(2TP+FP+FN)$. Macro metrics average defined class rates; weighted
+metrics weight them by true support. In single-label multiclass classification,
+accuracy = micro precision = micro recall = micro F1 = weighted recall, and
+balanced accuracy = macro recall.
+
+For audit group $g$, selection rate $SR_{c,g}=(TP+FP)/N_g$. Demographic-parity
+difference is $\max_g SR_{c,g}-\min_g SR_{c,g}$. Equal-opportunity difference
+is the range of group TPR; equalized-odds difference is the larger of the TPR
+and FPR ranges. Predictive-parity difference is the range of group precision.
+A missing denominator produces `NaN`, and disparity needs two defined groups.
+Quality and fairness tables should be interpreted together.
+"""
+            )
+
         config_text = gr.Code(
-            value=CONFIG_PATH.read_text(encoding="utf-8"),
-            language="yaml",
-            lines=40,
-            label="Experiment configuration",
+            value=CONFIG_PATH.read_text(encoding='utf-8'),
+            language='yaml',
+            lines=38,
+            label='Experiment configuration',
         )
-        run_button = gr.Button("Run experiment", variant="primary")
+        run_button = gr.Button('Run configured split', variant='primary')
         status = gr.Markdown()
 
         with gr.Tabs():
-            with gr.Tab("Prompt selection and final test"):
-                validation_results = gr.Dataframe(
-                    label="Validation conditions; selected_for_test marks one winner per language model",
+            with gr.Tab('Best conditions'):
+                best_conditions = gr.Dataframe(
+                    label='One current-split winner per language model',
                     interactive=False,
                 )
-                results = gr.Dataframe(
-                    label="Independent final-test result for each language model's selected condition",
+            with gr.Tab('All rankings'):
+                all_rankings = gr.Dataframe(
+                    label='All conditions ranked within language model',
                     interactive=False,
                 )
-            with gr.Tab("Metric details"):
-                class_metrics = gr.Dataframe(
-                    label="Per-class metrics",
-                    interactive=False,
-                )
+            with gr.Tab('Detailed metrics'):
+                class_metrics = gr.Dataframe(label='Per-class metrics', interactive=False)
                 fairness_metrics = gr.Dataframe(
-                    label="Group disparities by target class",
-                    interactive=False,
+                    label='Classwise group disparities', interactive=False
                 )
-                group_metrics = gr.Dataframe(
-                    label="Group rates and supports",
-                    interactive=False,
-                )
-                confusion_matrix = gr.Dataframe(
-                    label="Confusion counts",
-                    interactive=False,
-                )
-            with gr.Tab("Selected test predictions"):
+                group_metrics = gr.Dataframe(label='Group rates and supports', interactive=False)
+                confusion_matrix = gr.Dataframe(label='Confusion counts', interactive=False)
+            with gr.Tab('Best-condition predictions'):
                 predictions = gr.Dataframe(
-                    label="Final-test labels and scores for all selected language model conditions",
+                    label='Current-split labels and scores for winning conditions',
                     interactive=False,
                 )
-            with gr.Tab("Data and plots"):
-                dataset_counts = gr.Dataframe(
-                    label="Dataset composition",
+            with gr.Tab('Source composition'):
+                source_counts = gr.Dataframe(
+                    label='All filtered train, validation, and test source rows',
                     interactive=False,
                 )
+            with gr.Tab('Run composition'):
+                run_counts = gr.Dataframe(
+                    label='Capped train plus only the configured evaluation split',
+                    interactive=False,
+                )
+            with gr.Tab('Plots'):
                 plot_gallery = gr.Gallery(
-                    label="Validation and final-test metric plots",
-                    type="filepath",
+                    label='Rankings and best-condition diagnostics',
+                    type='filepath',
                     columns=2,
                     height=720,
-                    object_fit="contain",
-                    buttons=["download", "download_all", "fullscreen"],
+                    object_fit='contain',
+                    buttons=['download', 'download_all', 'fullscreen'],
                     interactive=False,
                 )
 
-        # One event keeps the UI easy to follow and calls the exact notebook pipeline.
         run_button.click(
             run_from_yaml,
             inputs=config_text,
             outputs=[
                 status,
-                validation_results,
-                results,
+                best_conditions,
+                all_rankings,
                 class_metrics,
                 fairness_metrics,
                 group_metrics,
                 confusion_matrix,
-                dataset_counts,
                 predictions,
+                source_counts,
+                run_counts,
                 plot_gallery,
             ],
             concurrency_limit=1,
@@ -373,5 +273,5 @@ scores are relative ranking scores, not calibrated probabilities.
     return app
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     build_app().queue(default_concurrency_limit=1).launch()

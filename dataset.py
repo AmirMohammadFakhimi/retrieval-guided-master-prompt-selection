@@ -193,17 +193,11 @@ def _download_data(config: dict[str, Any], destination: Path) -> list[dict[str, 
     return rows
 
 
-def load_data(config: dict[str, Any], project_root: Path) -> tuple[
-    list[dict[str, Any]],
-    list[dict[str, Any]],
-    list[dict[str, Any]],
-    pd.DataFrame,
-]:
-    """Load retrieval-train, prompt-selection, and final-test rows."""
+def load_data(config: dict[str, Any], project_root: Path) -> dict[str, list[dict[str, Any]]]:
+    """Load and normalize all profession-filtered source splits."""
 
     dataset_config = config['dataset']
     dataset_path = project_root / dataset_config['file']
-    train_size = train_size_limit(config)
     if not dataset_path.exists():
         rows = _download_data(config, dataset_path)
     else:
@@ -212,7 +206,31 @@ def load_data(config: dict[str, Any], project_root: Path) -> tuple[
     _, _, professions, _ = task_settings(config)
     rows = [row for row in rows if row[Column.PROFESSION] in professions]
 
-    available_train = [row for row in rows if row[Column.SPLIT] == 'train']
+    split_rows = {
+        'train': [{**row, Column.SPLIT: 'train'} for row in rows if row[Column.SPLIT] == 'train'],
+        'validation': [{**row, Column.SPLIT: 'validation'} for row in rows if row[Column.SPLIT] == 'dev'],
+        'test': [{**row, Column.SPLIT: 'test'} for row in rows if row[Column.SPLIT] == 'test'],
+    }
+    empty_splits = [name for name, split in split_rows.items() if not split]
+    if empty_splits:
+        raise ValueError(f'Dataset {dataset_config["hub_id"]} has no matching rows in canonical splits: {empty_splits}')
+
+    return split_rows
+
+
+def select_run_data(
+        config: dict[str, Any],
+        split_rows: dict[str, list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select the capped retrieval pool and configured evaluation rows."""
+
+    evaluation_split = config['defaults']['evaluation_split']
+    missing_splits = {'train', evaluation_split} - set(split_rows)
+    if missing_splits:
+        raise ValueError(f'split_rows is missing required splits: {sorted(missing_splits)}')
+
+    train_size = train_size_limit(config)
+    available_train = split_rows['train']
     train = available_train if train_size is None else available_train[:train_size]
 
     if train_size is not None and len(train) < train_size:
@@ -221,62 +239,69 @@ def load_data(config: dict[str, Any], project_root: Path) -> tuple[
         )
     if not train:
         raise ValueError('The training demonstration pool is empty')
-    if int(max(config['retrieval']['example_counts'])) > len(train):
+    if max(config['retrieval']['example_counts']) > len(train):
         raise ValueError(
-            'Every retrieval.example_counts entry must be <= the available training pool size ({len(train)})'
+            f'Every retrieval.example_counts entry must be <= the available training pool size ({len(train)})'
         )
 
-    validation_per_cell = dataset_config['validation_per_profession_gender']
-    test_per_cell = dataset_config['test_per_profession_gender']
-    validation: list[dict[str, Any]] = []
-    test: list[dict[str, Any]] = []
-    missing_cells: list[tuple[str, str, str]] = []
+    _, _, professions, _ = task_settings(config)
+    evaluation_per_cell = config['dataset']['evaluation_per_profession_gender']
+    available_evaluation = split_rows[evaluation_split]
+    evaluation: list[dict[str, Any]] = []
+    missing_cells: list[tuple[str, str]] = []
 
     progress_bar = tqdm(total=len(professions) * len(GENDERS), desc='Selecting evaluation cells', unit='cell')
     for profession in professions:
         for gender in GENDERS:
-            validation_cell = [
+            evaluation_cell = [
                 row
-                for row in rows
-                if row[Column.SPLIT] == 'dev'
-                   and row[Column.PROFESSION] == profession
-                   and row[Column.GENDER] == gender
-            ][:validation_per_cell]
+                for row in available_evaluation
+                if row[Column.PROFESSION] == profession and row[Column.GENDER] == gender
+            ][:evaluation_per_cell]
 
-            test_cell = [
-                row
-                for row in rows
-                if row[Column.SPLIT] == 'test'
-                   and row[Column.PROFESSION] == profession
-                   and row[Column.GENDER] == gender
-            ][:test_per_cell]
+            evaluation.extend(evaluation_cell)
 
-            validation.extend(
-                {**row, Column.SPLIT: 'validation'}
-                for row in validation_cell
-            )
-            test.extend(
-                {**row, Column.SPLIT: 'test'}
-                for row in test_cell
-            )
-
-            if len(validation_cell) < validation_per_cell:
-                missing_cells.append(('dev', profession, gender))
-            if len(test_cell) < test_per_cell:
-                missing_cells.append(('test', profession, gender))
+            if len(evaluation_cell) < evaluation_per_cell:
+                missing_cells.append((profession, gender))
             progress_bar.update(1)
+    progress_bar.close()
 
     if missing_cells:
-        raise ValueError(f'Bias in Bios lacks enough rows for these split/profession/gender cells: {missing_cells}')
+        raise ValueError(
+            f"Dataset {config['dataset']['hub_id']!r} lacks enough {evaluation_split} rows "
+            f"for these profession/gender cells: {missing_cells}"
+        )
+
+    return train, evaluation
+
+
+def calculate_dataset_counts(config: dict[str, Any], split_rows: dict[str, list[dict[str, Any]]]) -> pd.DataFrame:
+    """Describe profession-gender composition for the supplied canonical splits."""
+
+    _, _, professions, _ = task_settings(config)
+    if not split_rows:
+        raise ValueError('split_rows must contain at least one canonical split')
+    unknown_splits = set(split_rows) - {'train', 'validation', 'test'}
+    if unknown_splits:
+        raise ValueError(f'Unknown canonical dataset splits: {sorted(unknown_splits)}')
+
+    split_names = list(split_rows)
+    rows = [
+        {**row, Column.SPLIT: split_name}
+        for split_name, split in split_rows.items()
+        for row in split
+    ]
+    if not rows:
+        raise ValueError('Cannot calculate dataset counts from empty split rows')
 
     counts = (
-        pd.DataFrame(train + validation + test)
+        pd.DataFrame(rows)
         .groupby([Column.SPLIT, Column.PROFESSION, Column.GENDER], as_index=False)
         .size()
         .rename(columns={'size': 'count'})
     )
     complete_cells = pd.MultiIndex.from_product(
-        [['train', 'validation', 'test'], professions, GENDERS],
+        [split_names, professions, GENDERS],
         names=[Column.SPLIT, Column.PROFESSION, Column.GENDER],
     )
     counts = (
@@ -301,7 +326,7 @@ def load_data(config: dict[str, Any], project_root: Path) -> tuple[
         [Column.SPLIT, Column.GENDER]
     )['profession_share_within_gender'].transform(lambda values: values.max() - values.min())
 
-    return train, validation, test, counts
+    return counts
 
 
 def display_column_name(column: Column) -> str:

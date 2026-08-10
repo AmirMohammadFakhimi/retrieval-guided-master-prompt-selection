@@ -11,7 +11,6 @@ from matplotlib.patches import Patch
 from evaluation import (
     ACCURACY_METRIC_COLUMN,
     MACRO_RECALL_METRIC_COLUMN,
-    resolve_metric_column,
 )
 
 MetricSpec = tuple[str, str]
@@ -286,8 +285,8 @@ def _plot_metric_panels(
     legend_items = [Patch(facecolor='#4C78A8', label='Result')]
     if selected is not None:
         legend_items = [
-            Patch(facecolor='#1565C0', label='Selected for final test'),
-            Patch(facecolor='#90CAF9', label='Other validation condition'),
+            Patch(facecolor='#1565C0', label='Best condition'),
+            Patch(facecolor='#90CAF9', label='Other condition'),
         ]
     legend_items.append(
         plt.Line2D(
@@ -311,30 +310,16 @@ def _plot_metric_panels(
     plt.close(figure)
 
 
-def _summary_frame(frame: pd.DataFrame, split: str) -> pd.DataFrame:
-    if split == 'validation':
-        return frame.sort_values(
-            ['language_model', 'rank'], kind='stable'
-        ).reset_index(drop=True)
-    return frame.sort_values('language_model', kind='stable').reset_index(drop=True)
-
-
 def _create_summary_plots(
         frame: pd.DataFrame,
         split: str,
         output_dir: Path,
 ) -> dict[str, Path]:
-    plot_frame = _summary_frame(frame, split)
-    labels = (
-        _condition_labels(plot_frame)
-        if split == 'validation'
-        else plot_frame['language_model'].tolist()
-    )
-    selected = (
-        plot_frame['selected_for_test']
-        if split == 'validation'
-        else None
-    )
+    plot_frame = frame.sort_values(
+        ['language_model', 'rank'], kind='stable'
+    ).reset_index(drop=True)
+    labels = _condition_labels(plot_frame)
+    selected = plot_frame['is_best']
     context = _context_title(plot_frame)
     plot_specs = (
         ('quality_rates', QUALITY_METRICS, (0.0, 1.0), 'Quality rates'),
@@ -382,77 +367,11 @@ def _create_summary_plots(
     return plots
 
 
-def _plot_selection_vs_test(
-        final_results: pd.DataFrame,
-        ranking_metric: str,
+def _plot_confusion_matrices(
+        frame: pd.DataFrame,
+        split: str,
         output: Path,
 ) -> None:
-    metric_column = resolve_metric_column(ranking_metric)
-    frame = final_results.sort_values('language_model', kind='stable').reset_index(
-        drop=True
-    )
-    labels = frame['language_model'].tolist()
-    y = np.arange(len(frame))
-    validation_values = frame['validation_selection_score'].to_numpy(dtype=float)
-    test_values = frame[metric_column].to_numpy(dtype=float)
-    figure, axis = plt.subplots(
-        figsize=(10, max(4.8, 0.65 * len(frame) + 2.4))
-    )
-    axis.barh(
-        y - 0.18,
-        validation_values,
-        height=0.36,
-        label='Validation selection score',
-        color='#72B7B2',
-    )
-    axis.barh(
-        y + 0.18,
-        test_values,
-        height=0.36,
-        label='Final-test score',
-        color='#4C78A8',
-    )
-    undefined_validation = np.isnan(validation_values)
-    undefined_test = np.isnan(test_values)
-    axis.scatter(
-        np.zeros(undefined_validation.sum()),
-        y[undefined_validation] - 0.18,
-        marker='x',
-        color='#777777',
-        label='Undefined',
-    )
-    axis.scatter(
-        np.zeros(undefined_test.sum()),
-        y[undefined_test] + 0.18,
-        marker='x',
-        color='#777777',
-    )
-    if metric_column in _column_names(AGREEMENT_METRICS):
-        axis.set_xlim(-1.0, 1.0)
-    elif metric_column in _column_names(
-            SUMMARY_SIZE_COLUMNS + SUMMARY_COVERAGE_COLUMNS
-    ):
-        axis.set_xlim(*_metric_axis_limits(np.concatenate([
-            validation_values,
-            test_values,
-        ])))
-    else:
-        axis.set_xlim(0.0, 1.0)
-    axis.set_yticks(y, labels)
-    axis.invert_yaxis()
-    axis.grid(axis='x', alpha=0.2)
-    axis.set_xlabel('Value')
-    axis.set_title(
-        f'Validation-selected versus final-test {ranking_metric}\n'
-        f'{_context_title(frame)}'
-    )
-    axis.legend()
-    figure.tight_layout()
-    figure.savefig(output, dpi=160, bbox_inches='tight')
-    plt.close(figure)
-
-
-def _plot_confusion_matrices(frame: pd.DataFrame, output: Path) -> None:
     language_models = frame['language_model'].drop_duplicates().tolist()
     columns = min(2, len(language_models))
     rows = ceil(len(language_models) / columns)
@@ -511,7 +430,9 @@ def _plot_confusion_matrices(frame: pd.DataFrame, output: Path) -> None:
     for axis in axes_flat[len(language_models):]:
         axis.remove()
     figure.suptitle(
-        f'Final-test confusion matrices\n{_context_title(frame)}', fontsize=14
+        f'{split.title()} best-condition confusion matrices\n'
+        f'{_context_title(frame)}',
+        fontsize=14,
     )
     figure.tight_layout(rect=(0, 0, 1, 0.96))
     figure.savefig(output, dpi=160, bbox_inches='tight')
@@ -521,55 +442,51 @@ def _plot_confusion_matrices(frame: pd.DataFrame, output: Path) -> None:
 def create_metric_plots(
         result_tables: dict[str, pd.DataFrame],
         output_dir: Path,
-        ranking_metric: str,
+        evaluation_split: str,
 ) -> dict[str, Path]:
-    """Create validation summaries and final-test metric diagnostics."""
+    """Create complete plots for the configured evaluation split."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    validation_results = result_tables['validation_results']
-    final_results = result_tables['results']
+    results = result_tables['results']
     class_metrics = result_tables['class_metrics']
     group_metrics = result_tables['group_metrics']
     fairness_metrics = result_tables['fairness_metrics']
     confusion_matrix = result_tables['confusion_matrix']
 
-    test_class_metrics = class_metrics.loc[
-        class_metrics['evaluation_split'].eq('test')
+    selected_conditions = set(
+        results.loc[results['is_best'], 'condition']
+    )
+    best_class_metrics = class_metrics.loc[
+        class_metrics['condition'].isin(selected_conditions)
     ].sort_values(['language_model', 'target_class'], kind='stable').reset_index(
         drop=True
     )
-    test_group_metrics = group_metrics.loc[
-        group_metrics['evaluation_split'].eq('test')
+    best_group_metrics = group_metrics.loc[
+        group_metrics['condition'].isin(selected_conditions)
     ].sort_values(
         ['language_model', 'target_class', 'audit_group'], kind='stable'
     ).reset_index(drop=True)
-    test_fairness_metrics = fairness_metrics.loc[
-        fairness_metrics['evaluation_split'].eq('test')
+    best_fairness_metrics = fairness_metrics.loc[
+        fairness_metrics['condition'].isin(selected_conditions)
     ].sort_values(['language_model', 'target_class'], kind='stable').reset_index(
         drop=True
     )
-    test_confusion = confusion_matrix.loc[
-        confusion_matrix['evaluation_split'].eq('test')
+    best_confusion = confusion_matrix.loc[
+        confusion_matrix['condition'].isin(selected_conditions)
     ].sort_values(
         ['language_model', 'true_label', 'predicted_label'], kind='stable'
     ).reset_index(drop=True)
-    test_group_level = test_group_metrics.drop_duplicates(
+    best_group_level = best_group_metrics.drop_duplicates(
         ['language_model', 'condition', 'audit_group']
     ).sort_values(['language_model', 'audit_group'], kind='stable').reset_index(
         drop=True
     )
 
     _validate_numeric_coverage(
-        'validation_results',
-        validation_results,
+        'results',
+        results,
         _column_names(SUMMARY_METRICS),
         {'example_count', 'rank'},
-    )
-    _validate_numeric_coverage(
-        'results',
-        final_results,
-        _column_names(SUMMARY_METRICS) | {'validation_selection_score'},
-        {'example_count', 'selected_on_validation_rank'},
     )
     _validate_numeric_coverage(
         'class_metrics',
@@ -598,76 +515,71 @@ def create_metric_plots(
     )
 
     plots: dict[str, Path] = {}
-    plots.update(_create_summary_plots(validation_results, 'validation', output_dir))
-    plots.update(_create_summary_plots(final_results, 'test', output_dir))
-
-    selection_path = output_dir / 'validation_selection_vs_final_test.png'
-    _plot_selection_vs_test(final_results, ranking_metric, selection_path)
-    plots['validation_selection_vs_final_test'] = selection_path
+    plots.update(_create_summary_plots(results, evaluation_split, output_dir))
 
     detail_specs = (
         (
-            'test_class_rates',
-            test_class_metrics,
+            f'{evaluation_split}_best_class_rates',
+            best_class_metrics,
             CLASS_RATE_COLUMNS,
-            _class_labels(test_class_metrics),
-            'Final-test per-class rates',
+            _class_labels(best_class_metrics),
+            f'{evaluation_split.title()} best-condition per-class rates',
             (0.0, 1.0),
         ),
         (
-            'test_class_counts',
-            test_class_metrics,
+            f'{evaluation_split}_best_class_counts',
+            best_class_metrics,
             CLASS_COUNT_COLUMNS,
-            _class_labels(test_class_metrics),
-            'Final-test per-class counts',
+            _class_labels(best_class_metrics),
+            f'{evaluation_split.title()} best-condition per-class counts',
             None,
         ),
         (
-            'test_group_accuracy',
-            test_group_level,
+            f'{evaluation_split}_best_group_accuracy',
+            best_group_level,
             (('group_accuracy', 'Group accuracy'),),
-            _group_level_labels(test_group_level),
-            'Final-test group accuracy',
+            _group_level_labels(best_group_level),
+            f'{evaluation_split.title()} best-condition group accuracy',
             (0.0, 1.0),
         ),
         (
-            'test_group_size',
-            test_group_level,
+            f'{evaluation_split}_best_group_size',
+            best_group_level,
             (('group_n', 'Group size'),),
-            _group_level_labels(test_group_level),
-            'Final-test group sizes',
+            _group_level_labels(best_group_level),
+            f'{evaluation_split.title()} best-condition group sizes',
             None,
         ),
         (
-            'test_group_class_rates',
-            test_group_metrics,
+            f'{evaluation_split}_best_group_class_rates',
+            best_group_metrics,
             GROUP_RATE_COLUMNS,
-            _group_labels(test_group_metrics),
-            'Final-test per-class/per-group rates',
+            _group_labels(best_group_metrics),
+            f'{evaluation_split.title()} best-condition per-class/per-group rates',
             (0.0, 1.0),
         ),
         (
-            'test_group_class_counts',
-            test_group_metrics,
+            f'{evaluation_split}_best_group_class_counts',
+            best_group_metrics,
             GROUP_COUNT_COLUMNS,
-            _group_labels(test_group_metrics),
-            'Final-test per-class/per-group counts',
+            _group_labels(best_group_metrics),
+            f'{evaluation_split.title()} best-condition per-class/per-group counts',
             None,
         ),
         (
-            'test_classwise_fairness',
-            test_fairness_metrics,
+            f'{evaluation_split}_best_classwise_fairness',
+            best_fairness_metrics,
             FAIRNESS_CLASS_COLUMNS,
-            _class_labels(test_fairness_metrics),
-            'Final-test classwise fairness metrics',
+            _class_labels(best_fairness_metrics),
+            f'{evaluation_split.title()} best-condition classwise fairness metrics',
             (0.0, 1.0),
         ),
         (
-            'test_fairness_coverage',
-            test_fairness_metrics,
+            f'{evaluation_split}_best_fairness_coverage',
+            best_fairness_metrics,
             FAIRNESS_COVERAGE_COLUMNS,
-            _class_labels(test_fairness_metrics),
-            'Final-test fairness coverage',
+            _class_labels(best_fairness_metrics),
+            f'{evaluation_split.title()} best-condition fairness coverage',
             None,
         ),
     )
@@ -683,7 +595,12 @@ def create_metric_plots(
         )
         plots[name] = path
 
-    confusion_path = output_dir / 'test_confusion_matrices.png'
-    _plot_confusion_matrices(test_confusion, confusion_path)
-    plots['test_confusion_matrices'] = confusion_path
+    confusion_name = f'{evaluation_split}_best_confusion_matrices'
+    confusion_path = output_dir / f'{confusion_name}.png'
+    _plot_confusion_matrices(
+        best_confusion,
+        evaluation_split,
+        confusion_path,
+    )
+    plots[confusion_name] = confusion_path
     return plots

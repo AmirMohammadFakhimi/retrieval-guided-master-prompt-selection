@@ -34,14 +34,54 @@ TORCH_DTYPES = {
     'bfloat16': torch.bfloat16,
 }
 LANGUAGE_MODEL_DTYPES = frozenset({*TORCH_DTYPES, 'auto'})
+UNBOUNDED_TOKENIZER_LENGTH = 1_000_000_000
 
 
 class SemanticResource(TypedDict):
     """LanceDB table and matching evaluation embeddings for one embedding model."""
 
     table: LanceTable
-    validation_vectors: np.ndarray
-    test_vectors: np.ndarray
+    evaluation_vectors: np.ndarray
+
+
+def _validate_embedding_input_lengths(
+        encoder: SentenceTransformer,
+        rows: list[dict[str, Any]],
+        embedding_model_id: str,
+        max_sequence_length: int,
+        input_kind: str,
+        prompt: str = '',
+) -> None:
+    """Reject embedding inputs that SentenceTransformers would truncate."""
+
+    if not rows:
+        return
+
+    texts = [f'{prompt}{row[Column.HARD_TEXT]}' for row in rows]
+    tokenized = encoder.tokenizer(
+        texts,
+        add_special_tokens=True,
+        padding=False,
+        truncation=False,
+    )
+
+    for row, token_ids in zip(rows, tokenized['input_ids'], strict=True):
+        token_count = len(token_ids)
+        if token_count > max_sequence_length:
+            raise ValueError(
+                f'{embedding_model_id} {input_kind} input {row[Column.ID]!r} contains {token_count} tokens, '
+                f'exceeding max_sequence_length={max_sequence_length}. '
+                f'Shorten the input or increase the limit only within the embedding model\'s native context capacity.'
+            )
+
+
+def _language_model_context_length(tokenizer: PreTrainedTokenizerBase, language_model: PreTrainedModel) -> int:
+    """Return the Qwen tokenizer limit or Gemma text-model limit."""
+
+    if tokenizer.model_max_length < UNBOUNDED_TOKENIZER_LENGTH:
+        return tokenizer.model_max_length
+
+    return language_model.config.text_config.max_position_embeddings
 
 
 def choose_device(requested: str = 'auto') -> str:
@@ -107,13 +147,16 @@ def prepare_semantic_retrieval(
         model_kwargs={'dtype': TORCH_DTYPES[dtype_name]},
         truncate_dim=embedding_dimension,
     )
+    native_max_sequence_length = cast(int, encoder.get_max_seq_length())
+    if max_sequence_length > native_max_sequence_length:
+        raise ValueError(
+            f'{embedding_model_id} supports at most {native_max_sequence_length} tokens, '
+            f'but max_sequence_length={max_sequence_length} was configured'
+        )
     encoder.max_seq_length = max_sequence_length
 
     if table is None:
-        progress(
-            f'Building LanceDB table {table_name} with '
-            f'{len(train)} training embeddings'
-        )
+        progress(f'Building LanceDB table {table_name} with {len(train)} training embeddings')
         progress_bar = tqdm(
             total=len(train),
             desc='Embedding training rows for LanceDB',
@@ -123,6 +166,13 @@ def prepare_semantic_retrieval(
         try:
             for start in range(0, len(train), LANCEDB_INGEST_BATCH_SIZE):
                 batch = train[start:start + LANCEDB_INGEST_BATCH_SIZE]
+                _validate_embedding_input_lengths(
+                    encoder,
+                    batch,
+                    embedding_model_id,
+                    max_sequence_length,
+                    'training-document',
+                )
                 vectors = np.asarray(
                     encoder.encode(
                         [row[Column.HARD_TEXT] for row in batch],
@@ -168,6 +218,14 @@ def prepare_semantic_retrieval(
     if table is None:
         raise RuntimeError('Cannot build a LanceDB table from an empty training pool')
 
+    _validate_embedding_input_lengths(
+        encoder,
+        queries,
+        embedding_model_id,
+        max_sequence_length,
+        'query',
+        query_prompt,
+    )
     query_vectors = np.asarray(
         encoder.encode(
             [row[Column.HARD_TEXT] for row in queries],
@@ -487,6 +545,7 @@ def score_allowed_labels(
     if not labels:
         raise ValueError('At least one allowed label is required')
 
+    context_length = _language_model_context_length(tokenizer, language_model)
     empty_answer_ids = _apply_chat_template(
         [
             *messages,
@@ -530,6 +589,14 @@ def score_allowed_labels(
         candidate_stop = len(full_token_ids) - suffix_length
         prompt_ids = full_answer_ids[:prefix_length]
         candidate_ids = full_answer_ids[prefix_length:candidate_stop]
+
+        scored_sequence_length = prefix_length + candidate_ids.numel()
+        if scored_sequence_length > context_length:
+            raise ValueError(
+                f'The formatted prompt plus candidate label {label!r} contains {scored_sequence_length} tokens, '
+                f'exceeding {tokenizer.name_or_path}\'s {context_length}-token context limit. '
+                f'Shorten the prompt or reduce retrieval.example_counts.'
+            )
 
         if prompt_ids.numel() == 0:
             raise ValueError('The formatted chat produced no prompt tokens')

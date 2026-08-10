@@ -3,10 +3,11 @@
 B.Sc. project for comparing master prompts. Retrieved examples are controlled
 few-shot support; retrieval is not an independently optimized research target.
 
-For each configured language model, the pipeline evaluates the same prompt
-conditions on Bias-in-Bios `dev`, selects that language model's winner, and
-evaluates the winner once on `test`. Profession and gender are separate runs
-with the same prompt candidates and separate winners.
+For each configured language model, the pipeline evaluates and ranks the same
+prompt conditions on exactly one configured Bias-in-Bios split. Use
+`defaults.evaluation_split: validation` for `dev`, and switch it deliberately
+to `test` only when you want a test run. Profession and gender remain separate
+runs with the same prompt candidates and separate winners.
 
 ## Inference
 
@@ -30,11 +31,36 @@ generation instead of the current label scorer.
 
 ## Structure
 
-- `pipeline.py`: configuration validation and experiment orchestration;
-- `dataset.py`: Bias-in-Bios loading, cleaning, and target settings;
+- `configuration.py`: YAML loading and static configuration validation;
+- `pipeline.py`: experiment orchestration and artifact writing;
+- `dataset.py`: source loading/normalization, current-run row selection, and
+  dataset-composition counting;
 - `modeling.py`: retrieval, prompt construction, and language model scoring;
 - `evaluation.py`: metrics, ranking, and selected-prompt reporting;
-- `plotting.py`: validation comparisons and final-test metric diagnostics.
+- `plotting.py`: current-split condition comparisons and metric diagnostics;
+- `app.py`: teaching-oriented YAML editor with separate ranking, metric,
+  prediction, source-composition, run-composition, and plot views;
+- `Fairness_Aware_ICL_Complete_Pipeline.ipynb`: clean top-to-bottom experiment
+  walkthrough using the same public interfaces as the application.
+
+## Dataset flow
+
+`load_data(config, root)` loads and normalizes all profession-filtered source
+rows once and returns `train`, `validation` (source `dev`), and `test` mappings.
+This is a data-loading boundary, not permission to evaluate every split.
+
+`select_run_data(config, split_rows)` applies `dataset.train_size`, verifies
+that every retrieval example count fits the selected train pool, and selects
+the configured number of rows from each profession-gender cell in only
+`defaults.evaluation_split`.
+
+`calculate_dataset_counts(config, split_rows)` is the single composition-count
+implementation. It creates two different views during a run:
+
+- `source_dataset_counts`: every filtered source row in train, validation, and
+  test, for descriptive inspection only;
+- `run_dataset_counts`: the capped train pool plus only the configured
+  evaluation rows, which is authoritative for rows used by the experiment.
 
 ## Run
 
@@ -46,23 +72,38 @@ python app.py
 
 You can also run
 [`Fairness_Aware_ICL_Complete_Pipeline.ipynb`](Fairness_Aware_ICL_Complete_Pipeline.ipynb).
+It starts with the split contract and configuration, displays both composition
+tables, previews the language-model message format, runs the pipeline, and then
+walks through rankings, winners, detailed metrics, plots, prompts, and bounded
+prediction previews.
+
 For the study, run once with `defaults.target: profession` and once with
 `defaults.target: gender`, changing no other experimental controls.
 
+Keep `defaults.evaluation_split: validation` while comparing prompts. The
+single `dataset.evaluation_per_profession_gender` setting controls the selected
+split: use 5 rows per profession-gender cell for validation and 10 for test.
+The total is `number of professions × 2 × evaluation_per_profession_gender`.
+The unselected split is loaded only for source composition; it is never passed
+to embedding, prediction, metric calculation, ranking, or plotting.
+
 Important outputs in each timestamped result folder:
 
-- `validation_results.csv`: all conditions and one selected row per language model;
-- `results.csv`: one independent final-test row per language model;
-- `predictions.csv`: prompts, retrieved-example metadata, seeds, label scores, and labels;
-- `best_prompts.txt`: the selected prompt for each language model;
-- `plots/`: focused validation and final-test plots for every numeric metric,
+- `<split>_results.csv`: every ranked condition and one `is_best` row per language model;
+- `<split>_predictions.csv`: prompts, retrieved-example metadata, seeds, label scores, and labels;
+- `<split>_best_prompts.txt`: the selected prompt for each language model;
+- `<split>_source_dataset_counts.csv`: all filtered train, validation, and test
+  source composition;
+- `<split>_run_dataset_counts.csv`: capped train plus the selected evaluation
+  split composition;
+- `plots/`: focused current-split plots for every numeric metric,
   count, support, coverage value, and confusion matrix;
-- class, confusion, group, fairness, and data-composition CSV outputs.
+- split-prefixed class, confusion, group, and fairness CSV outputs.
 
-Validation summary plots compare every condition in within-language-model rank
-order and highlight the selected condition. Final-test summaries and detailed
-class, group, fairness, coverage, and confusion diagnostics contain only those
-validation-selected winners.
+Summary plots compare every configured condition in within-language-model rank
+order and highlight `is_best`. Detailed class, group, fairness, coverage, and
+confusion diagnostics focus on the current split's winner for each model; the
+CSV metric tables retain every condition.
 
 ## Metric formulas
 
@@ -176,4 +217,4 @@ The corresponding defined-class count is $|D_d|$.
 
 The checked-in configuration has two retrieval methods, two embedding models,
 two example counts, one example order, two master prompts, and four language models:
-64 validation conditions per target.
+64 conditions per target and configured evaluation split.

@@ -1,145 +1,135 @@
-# Values below are quick, runnable defaults.
-# "Final" recommendations assume a practical BSc run on local hardware.
+# Quick, runnable defaults. Every setting documents its accepted value or shape.
 
 defaults:
-  # Held-out column. Final: run the complete experiment twice, once with
-  # profession and once with gender; keep each run in a separate result folder.
+  # Exact values: profession | gender. Run them separately with the same candidates.
   target: profession
 
-  # Controls deterministic example ordering. Label scoring does not sample.
+  # Exact values: validation | test. validation maps to source dev; test maps to
+  # source test. A run embeds, predicts, and evaluates only the selected split.
+  evaluation_split: validation
+
+  # Non-negative integer. Controls deterministic example shuffling only.
   seed: 42
 
-  # Parent folder for timestamped run directories.
-  # Final: results is suitable; use results_profession/results_gender if desired.
+  # Non-empty path string. Timestamped run directories are created below it.
   output_dir: results
 
-  # Validation metric that selects one prompt per language model for final test.
-  # Final quality-oriented choice: macro_f1. For a separate fairness-oriented
-  # analysis use max_equalized_odds_difference with direction: minimize.
-  # Standard aliases such as accuracy, micro_f1, macro_recall, and
-  # balanced_accuracy resolve to their shared formula-equivalent result column.
+  # Non-empty numeric column from <split>_results.csv, or one of these aliases:
+  # accuracy, micro_precision, micro_recall, micro_f1, weighted_recall,
+  # macro_recall, balanced_accuracy. Recommended quality metric: macro_f1.
   ranking_metric: macro_f1
 
-  # maximize for quality/ratio metrics; minimize for error/difference metrics.
-  # Final with macro_f1: maximize.
+  # Exact values: maximize | minimize. Use maximize for quality/ratio metrics
+  # and minimize for error/difference metrics.
   ranking_direction: maximize
 
 dataset:
-  # Complete shuffled train/dev/test JSONL cache. Final: keep this path.
+  # Non-empty path string for the normalized train/dev/test JSONL cache.
   file: data/bias_in_bios.jsonl
 
-  # Download source used when the complete cache is missing. Final: keep.
+  # Non-empty Hugging Face dataset ID used only when the cache is missing.
   hub_id: LabHC/bias_in_bios
 
-  # Included professions. Use all for all 28 labels/groups.
-  # Final practical local run: keep these four and state the limited scope.
-  # Final expanded run with substantially more compute: all.
+  # Exact form: all, or a non-empty unique YAML list containing at least two of
+  # the 28 profession names defined in dataset.PROFESSIONS.
   professions: all
 
-  # Reproducibly shuffle train, dev, and test before selecting rows. Keep this
-  # fixed so every language model sees the same retrieval pool and evaluation rows.
+  # Non-negative integer. Shuffles each source split before it is cached.
   shuffle_seed: 42
 
-  # Retrieval-pool size applied after the complete source dataset is cached.
-  # Larger pools improve candidate coverage.
-  # Final practical value: 10000; reduce if embedding time/memory is excessive.
+  # Exact form: all, or a positive integer retrieval-pool cap after filtering.
   train_size: all
 
-  # Number of prompt-selection rows from dev in every profession x gender cell.
-  # Total validation rows = professions * 2 * this value.
-  # Final practical value: 5.
-  validation_per_profession_gender: 5
-
-  # Final-test rows from test in every profession x gender cell. These are used
-  # only after validation on dev selects one prompt condition.
-  # Total test rows = professions * 2 * this value. Final practical value: 10.
-  test_per_profession_gender: 10
+  # Positive integer rows per profession-gender cell in the selected split.
+  # Total evaluation rows = professions * 2 * this value. Recommended: 5 for
+  # validation comparison and 10 for a deliberately requested test run.
+  evaluation_per_profession_gender: 5
 
 retrieval:
-  # Retrieval support conditions for the master-prompt comparison. semantic
-  # takes the nearest hard_text rows. balanced_semantic repeatedly takes the
-  # nearest currently feasible row while keeping profession, gender, and joint
-  # profession-gender pair counts as even as possible.
+  # Non-empty unique list. Exact values: semantic | balanced_semantic.
   methods: [semantic, balanced_semantic]
 
-  # Numbers of labelled few-shot examples inserted into each prompt.
-  # Every value creates another condition. Final practical search: [2, 4];
-  # optionally add 8 if the language model context and runtime allow.
+  # Non-empty unique list of positive integers, each <= the selected train pool.
+  # Every value creates another condition and lengthens the rendered prompt.
   example_counts: [2, 4]
 
-  # Valid values: as_retrieved, reverse, shuffle.
-  # Final primary run: [as_retrieved]. For an order ablation, compare all three.
+  # Non-empty unique list. Exact values: as_retrieved | reverse | shuffle.
   example_orders: [as_retrieved]
 
-  # Each entry creates semantic and balanced_semantic conditions.
-  # Embedding-model-specific settings are required because dimensions, context
-  # limits, precision, batch capacity, and trained query prefixes differ.
+  # Non-empty list with unique id values. Each entry requires the six fields
+  # documented below and creates another set of retrieval conditions.
   embedding_models:
-    - id: Qwen/Qwen3-Embedding-8B
-      # Full native output. If exact search is too slow, test 2048 separately.
+    - # id: non-empty Hugging Face model ID.
+      id: Qwen/Qwen3-Embedding-8B
+      # dimension: positive integer equal to the encoder output width.
       dimension: 4096
-      # Character count does not guarantee token count. 1024 safely raises the
-      # cap for this short corpus while remaining far below Qwen's 32K maximum.
+      # max_sequence_length: positive integer no greater than the model's native
+      # context. Inputs beyond this configured limit fail instead of truncating.
       max_sequence_length: 1024
-      # Conservative starting point for 8B BF16 inference on Apple MPS.
+      # batch_size: positive integer chosen for available accelerator memory.
       batch_size: 16
-      # Qwen3 Embedding is trained in BF16; MPS requires macOS 14+ for BF16.
+      # Exact values: float32 | float16 | bfloat16.
       dtype: bfloat16
-      # Applied only to queries; cached training hard_text remains unprefixed.
+      # Non-empty string applied to evaluation queries only; train rows stay raw.
       query_prompt: |-
         Instruct: Given a biography, retrieve biographies with similar semantic content.
         Query:
 
-    - id: BAAI/bge-large-en-v1.5
-      # Native BGE vector width and architectural sequence limit.
+    - # Same required shape and contracts as the entry above.
+      id: BAAI/bge-large-en-v1.5
       dimension: 1024
       max_sequence_length: 512
-      # The smaller encoder supports a larger batch and stable FP32 inference.
       batch_size: 64
       dtype: float32
-      # BGE's official English retrieval prefix; documents remain unprefixed.
       query_prompt: "Represent this sentence for searching relevant passages: "
 
-  # Persistent LanceDB directory. Each embedding model ID receives one reusable
-  # table. Delete this directory before rerunning with changed data or settings.
+  # Non-empty path string. Each embedding-model ID owns one reusable table.
+  # Delete this directory before changing source rows or embedding settings.
   lancedb_path: data/lancedb
 
-# Every named entry creates another prompt condition. Supported placeholders:
-# {target}, {audit_column}, and {labels}.
+# Non-empty mapping of unique non-empty names to non-empty template strings.
+# Supported placeholders are exactly {target}, {audit_column}, and {labels}.
+# Every named template creates another condition.
 prompt_templates:
-  # Final: retain as the neutral baseline.
+  # Non-empty template string; neutral is the baseline candidate.
   neutral: >-
     Predict the held-out {target} from the supplied fields and examples.
 
-  # Final: retain as the fairness-aware candidate. Define any additional
-  # candidate prompts before examining final-test results.
+  # Non-empty template string using only the supported placeholders above.
   fairness_aware: >-
     Predict the held-out {target} from the supplied fields and examples.
     Apply the same decision rule across {audit_column} groups and avoid
     unsupported stereotypes.
 
 inference:
-  # Every entry creates a separate language model condition. Language models
-  # are loaded and released one at a time so their weights are never resident
-  # together.
-  # This precision is separate from each retrieval embedding model's dtype.
+  # Non-empty list with unique id values. Models load one at a time. Each entry
+  # requires a non-empty Hugging Face ID, non-empty revision, and supported dtype.
+  # Rendered prompts are checked against each loaded model's native context
+  # limit and fail rather than being truncated; no separate context override is
+  # accepted here.
   language_models:
-    - id: Qwen/Qwen3.6-27B
+    - # id: non-empty Hugging Face model ID.
+      id: Qwen/Qwen3.6-27B
+      # revision: non-empty Hub commit, tag, or branch string.
       revision: 6a9e13bd6fc8f0983b9b99948120bc37f49c13e9
+      # Exact values: auto | float32 | float16 | bfloat16.
       dtype: bfloat16
 
-    - id: Qwen/Qwen3.5-27B
+    - # Same required shape and contracts as the entry above.
+      id: Qwen/Qwen3.5-27B
       revision: fc05daec18b0a78c049392ed2e771dde82bdf654
       dtype: bfloat16
 
-    - id: Qwen/Qwen3.6-35B-A3B
+    - # Same required shape and contracts as the entry above.
+      id: Qwen/Qwen3.6-35B-A3B
       revision: 995ad96eacd98c81ed38be0c5b274b04031597b0
       dtype: bfloat16
 
-    - id: google/gemma-4-31B-it
+    - # Same required shape and contracts as the entry above.
+      id: google/gemma-4-31B-it
       revision: 842da3794eaa0b77d5f08bae87a17459d91ff475
       dtype: bfloat16
 
-  # This local experiment targets the Apple GPU. Use auto only when CPU
-  # fallback is genuinely acceptable.
+  # Exact values: auto | cuda | mps | cpu. Explicit unavailable accelerators
+  # fail; auto tries CUDA, then MPS, then CPU.
   device: mps

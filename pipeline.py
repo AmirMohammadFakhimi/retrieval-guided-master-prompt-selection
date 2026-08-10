@@ -3,13 +3,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import pandas as pd
 import yaml
 from tqdm.auto import tqdm
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+import configuration
 import dataset
 import evaluation
 import modeling
@@ -24,6 +25,7 @@ class PredictionContext:
 
     example_order_seed: int
     dataset_shuffle_seed: int
+    evaluation_split: str
     target: dataset.Column
     audit_column: dataset.Column
     labels: list[str]
@@ -32,132 +34,6 @@ class PredictionContext:
     semantic_resources: dict[str, modeling.SemanticResource]
     training_profession_gender_pairs: tuple[tuple[str, str], ...]
     retrieval_cache: RetrievalCache
-
-
-def load_config(path: Path) -> dict[str, Any]:
-    """Load a YAML configuration file."""
-
-    with path.open(encoding='utf-8') as handle:
-        config = yaml.safe_load(handle)
-
-    return config
-
-
-def validate_config(config: dict[str, Any]) -> None:
-    """Fail early for the small set of settings that would invalidate a run."""
-
-    dataset.task_settings(config)
-    train_size = dataset.train_size_limit(config)
-    defaults = config['defaults']
-    retrieval = config['retrieval']
-    inference_settings = config['inference']
-
-    if defaults['seed'] < 0:
-        raise ValueError('defaults.seed must be non-negative')
-    if defaults['ranking_direction'] not in {'maximize', 'minimize'}:
-        raise ValueError('defaults.ranking_direction must be maximize or minimize')
-    if config['dataset']['validation_per_profession_gender'] < 1:
-        raise ValueError('dataset.validation_per_profession_gender must be at least 1')
-    if config['dataset']['test_per_profession_gender'] < 1:
-        raise ValueError('dataset.test_per_profession_gender must be at least 1')
-    if config['dataset']['shuffle_seed'] < 0:
-        raise ValueError('dataset.shuffle_seed must be non-negative')
-    language_model_configs = inference_settings['language_models']
-    if not isinstance(language_model_configs, list) or not language_model_configs:
-        raise ValueError('inference.language_models must contain at least one language model')
-
-    language_model_ids: list[str] = []
-    for index, language_model_config in enumerate(language_model_configs):
-        if not isinstance(language_model_config, dict):
-            raise ValueError(f'inference.language_models[{index}] must be a dict')
-
-        missing_settings = sorted({'id', 'revision', 'dtype'} - set(language_model_config))
-        if missing_settings:
-            raise ValueError(f'inference.language_models[{index}] is missing: {missing_settings}')
-
-        language_model_id = language_model_config['id']
-        if not language_model_id:
-            raise ValueError(f'inference.language_models[{index}].id cannot be empty')
-        language_model_ids.append(language_model_id)
-        if not language_model_config['revision']:
-            raise ValueError(f'inference.language_models[{index}].revision cannot be empty')
-        if language_model_config['dtype'] not in modeling.LANGUAGE_MODEL_DTYPES:
-            allowed_dtypes = ', '.join(sorted(modeling.LANGUAGE_MODEL_DTYPES))
-            raise ValueError(f'inference.language_models[{index}].dtype must be one of: {allowed_dtypes}')
-    if len(language_model_ids) != len(set(language_model_ids)):
-        raise ValueError('inference.language_models cannot contain duplicate IDs')
-
-    methods = retrieval['methods']
-    if not isinstance(methods, list) or not methods:
-        raise ValueError('retrieval.methods must be a non-empty list')
-    unknown_methods = sorted(set(methods) - modeling.RETRIEVAL_METHODS)
-    if unknown_methods:
-        raise ValueError(
-            f'Unknown retrieval methods {unknown_methods}; expected values from {sorted(modeling.RETRIEVAL_METHODS)}'
-        )
-    if len(methods) != len(set(methods)):
-        raise ValueError('retrieval.methods cannot contain duplicates')
-    example_counts = [value for value in retrieval['example_counts']]
-    if not example_counts or any(value < 1 for value in example_counts):
-        raise ValueError('retrieval.example_counts must contain positive integers')
-    if train_size is not None and max(example_counts) > train_size:
-        raise ValueError('Every retrieval.example_counts entry must be <= dataset.train_size')
-    if len(example_counts) != len(set(example_counts)):
-        raise ValueError('retrieval.example_counts cannot contain duplicates')
-    if not str(retrieval['lancedb_path']):
-        raise ValueError('retrieval.lancedb_path cannot be empty')
-
-    embedding_models = retrieval['embedding_models']
-    if not isinstance(embedding_models, list) or not embedding_models:
-        raise ValueError('retrieval.embedding_models must contain at least one embedding model')
-    required_embedding_settings = {
-        'id',
-        'dimension',
-        'max_sequence_length',
-        'batch_size',
-        'dtype',
-        'query_prompt',
-    }
-    embedding_model_ids: list[str] = []
-    for index, embedding_model in enumerate(embedding_models):
-        if not isinstance(embedding_model, dict):
-            raise ValueError(f'retrieval.embedding_models[{index}] must be a dict')
-        missing_settings = sorted(required_embedding_settings - set(embedding_model))
-        if missing_settings:
-            raise ValueError(f'retrieval.embedding_models[{index}] is missing: {missing_settings}')
-        embedding_model_id = embedding_model['id']
-        if not embedding_model_id:
-            raise ValueError(f'retrieval.embedding_models[{index}].id cannot be empty')
-        embedding_model_ids.append(embedding_model_id)
-        for setting in ('dimension', 'max_sequence_length', 'batch_size'):
-            value = embedding_model[setting]
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(f'retrieval.embedding_models[{index}].{setting} must be a positive integer')
-        if embedding_model['dtype'] not in modeling.TORCH_DTYPES:
-            allowed_dtypes = ', '.join(modeling.TORCH_DTYPES)
-            raise ValueError(f'retrieval.embedding_models[{index}].dtype must be one of: {allowed_dtypes}')
-        if not embedding_model['query_prompt']:
-            raise ValueError(f'retrieval.embedding_models[{index}].query_prompt cannot be empty')
-    if len(embedding_model_ids) != len(set(embedding_model_ids)):
-        raise ValueError('retrieval.embedding_models cannot contain duplicate IDs')
-
-    orders = retrieval['example_orders']
-    if not isinstance(orders, list) or not orders:
-        raise ValueError('retrieval.example_orders must be a non-empty list')
-    unknown_orders = sorted(set(orders) - modeling.EXAMPLE_ORDERS)
-    if unknown_orders:
-        raise ValueError(
-            f'Unknown example orders {unknown_orders}; '
-            f'expected values from {sorted(modeling.EXAMPLE_ORDERS)}'
-        )
-    if len(orders) != len(set(orders)):
-        raise ValueError('retrieval.example_orders cannot contain duplicates')
-
-    templates = config['prompt_templates']
-    if not isinstance(templates, dict) or not templates:
-        raise ValueError('prompt_templates must contain at least one named prompt')
-    if not all(name and text for name, text in templates.items()):
-        raise ValueError('prompt template names and texts cannot be empty')
 
 
 def _build_conditions(
@@ -201,8 +77,7 @@ def _build_conditions(
 
 def _prepare_semantic_resources(
         train: list[dict[str, Any]],
-        validation: list[dict[str, Any]],
-        test: list[dict[str, Any]],
+        evaluation_rows: list[dict[str, Any]],
         embedding_models: list[dict[str, Any]],
         device: str,
         database_path: Path,
@@ -210,7 +85,6 @@ def _prepare_semantic_resources(
 ) -> dict[str, modeling.SemanticResource]:
     """Prepare retrieval tables and evaluation vectors for every embedding model."""
 
-    evaluation_rows = validation + test
     semantic_resources: dict[str, modeling.SemanticResource] = {}
     progress_bar = tqdm(
         embedding_models,
@@ -231,8 +105,7 @@ def _prepare_semantic_resources(
 
         semantic_resources[embedding_model_id] = {
             'table': semantic_table,
-            'validation_vectors': evaluation_vectors[:len(validation)],
-            'test_vectors': evaluation_vectors[len(validation):],
+            'evaluation_vectors': evaluation_vectors,
         }
 
     return semantic_resources
@@ -242,22 +115,16 @@ def _generate_condition_predictions(
         context: PredictionContext,
         language_model_condition: dict[str, Any],
         queries: list[dict[str, Any]],
-        evaluation_split: Literal['validation', 'test'],
         tokenizer: PreTrainedTokenizerBase,
         language_model: PreTrainedModel,
 ) -> list[dict[str, Any]]:
-    """Predict every row for one prompt condition and one data split."""
+    """Predict every evaluation row for one prompt condition."""
 
     retrieval_method = language_model_condition['retrieval_method']
     embedding_model_id = language_model_condition['embedding_model']
     semantic_resource = context.semantic_resources[embedding_model_id]
     semantic_table = semantic_resource['table']
-    if evaluation_split == 'validation':
-        query_vectors = semantic_resource['validation_vectors']
-    elif evaluation_split == 'test':
-        query_vectors = semantic_resource['test_vectors']
-    else:
-        raise ValueError(f'Unknown evaluation split: {evaluation_split}')
+    query_vectors = semantic_resource['evaluation_vectors']
 
     rows: list[dict[str, Any]] = []
     for query_index, query in enumerate(queries):
@@ -311,7 +178,7 @@ def _generate_condition_predictions(
             'dataset_shuffle_seed': context.dataset_shuffle_seed,
         }
         prediction_metadata = {
-            'evaluation_split': evaluation_split,
+            'evaluation_split': context.evaluation_split,
             'query_id': query[dataset.Column.ID],
             dataset.Column.HARD_TEXT: query[dataset.Column.HARD_TEXT],
             dataset.Column.PROFESSION: query[dataset.Column.PROFESSION],
@@ -347,21 +214,24 @@ def _write_run_outputs(
         root: Path,
         config: dict[str, Any],
         result_tables: dict[str, pd.DataFrame],
-        selected_validation: pd.DataFrame,
         labels: list[str],
 ) -> dict[str, Any]:
     """Write experiment tables and reports, then return their paths and data."""
 
     defaults = config['defaults']
+    evaluation_split = defaults['evaluation_split']
     run_dir = (
             root
             / defaults['output_dir']
-            / datetime.now().strftime('run-%Y%m%d-%H%M%S-%f')
+            / datetime.now().strftime(f'{evaluation_split}-run-%Y%m%d-%H%M%S-%f')
     )
     run_dir.mkdir(parents=True)
 
     for table_name, table in result_tables.items():
-        table.to_csv(run_dir / f'{table_name}.csv', index=False)
+        table.to_csv(
+            run_dir / f'{evaluation_split}_{table_name}.csv',
+            index=False,
+        )
 
     with (run_dir / 'config_used.yaml').open('w', encoding='utf-8') as handle:
         yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
@@ -369,25 +239,27 @@ def _write_run_outputs(
     plots = plotting.create_metric_plots(
         result_tables,
         run_dir / 'plots',
-        defaults['ranking_metric'],
+        evaluation_split,
     )
-    plot_path = plots['validation_quality_rates']
-    best_prompts_path = run_dir / 'best_prompts.txt'
+    selected = result_tables['results'].loc[
+        result_tables['results']['is_best']
+    ].copy()
+    best_prompts_path = run_dir / f'{evaluation_split}_best_prompts.txt'
     evaluation.write_best_prompts(
         best_prompts_path,
-        selected_validation,
+        selected,
         config['prompt_templates'],
         labels,
         defaults['ranking_metric'],
         defaults['ranking_direction'],
-        result_tables['results'],
+        evaluation_split,
     )
 
     return {
+        'evaluation_split': evaluation_split,
         'run_dir': run_dir,
         **result_tables,
         'plots': plots,
-        'plot': plot_path,
         'best_prompts': best_prompts_path,
     }
 
@@ -399,10 +271,10 @@ def run_experiment(
 ) -> dict[str, Any]:
     """Run the complete experiment and return tables plus output paths."""
 
-    validate_config(config)
+    configuration.validate_config(config)
     root = Path(project_root).resolve()
     defaults = config['defaults']
-    ranking_metric = evaluation.resolve_metric_column(defaults['ranking_metric'])
+    evaluation_split = defaults['evaluation_split']
     target, audit_column, _, labels = dataset.task_settings(config)
 
     inference_settings = config['inference']
@@ -411,14 +283,23 @@ def run_experiment(
     progress(f'Using device: {device}')
     progress(f'Holding out {target}; language model input is hard_text + {audit_column}')
 
-    train, validation, test, dataset_counts = dataset.load_data(config, root)
-    progress(f'Loaded {len(train)} train, {len(validation)} validation, and {len(test)} test biographies')
+    source_splits = dataset.load_data(config, root)
+    source_dataset_counts = dataset.calculate_dataset_counts(config, source_splits)
+    train, evaluation_rows = dataset.select_run_data(config, source_splits)
+    run_dataset_counts = dataset.calculate_dataset_counts(
+        config,
+        {'train': train, evaluation_split: evaluation_rows},
+    )
+    progress(
+        f'Loaded {sum(map(len, source_splits.values()))} filtered source rows; '
+        f'selected {len(train)} train and {len(evaluation_rows)} '
+        f'{evaluation_split} rows for this run'
+    )
 
     embedding_models = config['retrieval']['embedding_models']
     semantic_resources = _prepare_semantic_resources(
         train,
-        validation,
-        test,
+        evaluation_rows,
         embedding_models,
         device,
         root / config['retrieval']['lancedb_path'],
@@ -436,6 +317,7 @@ def run_experiment(
     prediction_context = PredictionContext(
         example_order_seed=defaults['seed'],
         dataset_shuffle_seed=config['dataset']['shuffle_seed'],
+        evaluation_split=evaluation_split,
         target=target,
         audit_column=audit_column,
         labels=labels,
@@ -455,16 +337,22 @@ def run_experiment(
         prompt_templates,
     )
 
-    validation_prediction_rows: list[dict[str, Any]] = []
+    prediction_frames: list[pd.DataFrame] = []
+    result_frames: list[pd.DataFrame] = []
+    class_metric_frames: list[pd.DataFrame] = []
+    confusion_frames: list[pd.DataFrame] = []
+    group_metric_frames: list[pd.DataFrame] = []
+    fairness_metric_frames: list[pd.DataFrame] = []
     language_model_progress_bar = tqdm(
         language_models_config,
-        desc='Validating language models',
+        desc=f'Evaluating language models on {evaluation_split}',
         unit='model',
         position=0,
         leave=True,
     )
     for language_model_config in language_model_progress_bar:
         language_model_id = language_model_config['id']
+        language_model_result_frames: list[pd.DataFrame] = []
         tokenizer, language_model = modeling.load_language_model(
             language_model_id,
             language_model_config['revision'],
@@ -480,135 +368,65 @@ def run_experiment(
             ]
             condition_progress_bar = tqdm(
                 language_model_conditions,
-                desc=f'Validating {language_model_id}',
+                desc=f'Evaluating {language_model_id}',
                 unit='condition',
                 position=1,
                 leave=True,
             )
             for language_model_condition in condition_progress_bar:
-                validation_prediction_rows.extend(
+                condition_predictions = pd.DataFrame(
                     _generate_condition_predictions(
                         prediction_context,
                         language_model_condition,
-                        validation,
-                        'validation',
+                        evaluation_rows,
                         tokenizer,
                         language_model,
                     )
                 )
-        finally:
-            del tokenizer, language_model
-            modeling.clear_language_model_memory(device)
+                (
+                    condition_results,
+                    condition_class_metrics,
+                    condition_confusion,
+                    condition_group_metrics,
+                    condition_fairness_metrics,
+                ) = evaluation.calculate_condition_metrics(
+                    condition_predictions,
+                    labels,
+                )
+                prediction_frames.append(condition_predictions)
+                language_model_result_frames.append(condition_results)
+                class_metric_frames.append(condition_class_metrics)
+                confusion_frames.append(condition_confusion)
+                group_metric_frames.append(condition_group_metrics)
+                fairness_metric_frames.append(condition_fairness_metrics)
 
-    validation_predictions = pd.DataFrame(validation_prediction_rows)
-
-    (
-        validation_results,
-        validation_class_metrics,
-        validation_confusion,
-        validation_group_metrics,
-        validation_fairness_metrics,
-    ) = evaluation.calculate_metrics(validation_predictions, labels)
-    validation_results = evaluation.rank_results(
-        validation_results,
-        ranking_metric,
-        defaults['ranking_direction'],
-    )
-    validation_results.insert(
-        2, 'selected_for_test', validation_results['rank'].eq(1)
-    )
-    selected_validation = validation_results.loc[
-        validation_results['selected_for_test']
-    ].copy()
-
-    conditions_by_name = {
-        setting['condition']: setting for setting in conditions
-    }
-    selected_by_language_model = {
-        row['language_model']: row
-        for row in selected_validation.to_dict('records')
-    }
-    test_prediction_rows: list[dict[str, Any]] = []
-    for language_model_number, language_model_config in enumerate(
-            language_models_config, start=1
-    ):
-        language_model_id = language_model_config['id']
-        best_validation = selected_by_language_model[language_model_id]
-        selected_setting = conditions_by_name[best_validation['condition']]
-        progress(
-            f'Loading selected language model '
-            f'[{language_model_number}/{len(language_models_config)}]: '
-            f'{language_model_id}'
-        )
-        tokenizer, language_model = modeling.load_language_model(
-            language_model_id,
-            language_model_config['revision'],
-            device,
-            language_model_config['dtype'],
-        )
-        try:
-            progress(f'Final test: {selected_setting['condition']}')
-            test_prediction_rows.extend(
-                _generate_condition_predictions(
-                    prediction_context,
-                    selected_setting,
-                    test,
-                    'test',
-                    tokenizer,
-                    language_model,
+            result_frames.append(
+                evaluation.rank_results(
+                    pd.concat(language_model_result_frames, ignore_index=True),
+                    defaults['ranking_metric'],
+                    defaults['ranking_direction'],
                 )
             )
         finally:
             del tokenizer, language_model
             modeling.clear_language_model_memory(device)
-    test_predictions = pd.DataFrame(test_prediction_rows)
-    (
-        results,
-        test_class_metrics,
-        test_confusion,
-        test_group_metrics,
-        test_fairness_metrics,
-    ) = evaluation.calculate_metrics(test_predictions, labels)
-    results.insert(0, 'selected_on_validation_rank', 1)
-    results.insert(
-        1,
-        'validation_selection_score',
-        results['language_model'].map(
-            selected_validation.set_index('language_model')[ranking_metric]
-        ),
-    )
 
-    predictions = pd.concat(
-        [validation_predictions, test_predictions], ignore_index=True
-    )
-    class_metrics = pd.concat(
-        [validation_class_metrics, test_class_metrics], ignore_index=True
-    )
-    confusion_matrix = pd.concat(
-        [validation_confusion, test_confusion], ignore_index=True
-    )
-    group_metrics = pd.concat(
-        [validation_group_metrics, test_group_metrics], ignore_index=True
-    )
-    fairness_metrics = pd.concat(
-        [validation_fairness_metrics, test_fairness_metrics], ignore_index=True
-    )
+    results = pd.concat(result_frames, ignore_index=True)
 
     result_tables = {
-        'predictions': predictions,
-        'validation_results': validation_results,
+        'predictions': pd.concat(prediction_frames, ignore_index=True),
         'results': results,
-        'class_metrics': class_metrics,
-        'confusion_matrix': confusion_matrix,
-        'group_metrics': group_metrics,
-        'fairness_metrics': fairness_metrics,
-        'dataset_counts': dataset_counts,
+        'class_metrics': pd.concat(class_metric_frames, ignore_index=True),
+        'confusion_matrix': pd.concat(confusion_frames, ignore_index=True),
+        'group_metrics': pd.concat(group_metric_frames, ignore_index=True),
+        'fairness_metrics': pd.concat(fairness_metric_frames, ignore_index=True),
+        'source_dataset_counts': source_dataset_counts,
+        'run_dataset_counts': run_dataset_counts,
     }
     output = _write_run_outputs(
         root,
         config,
         result_tables,
-        selected_validation,
         labels,
     )
 

@@ -35,6 +35,44 @@ METRIC_COLUMN_ALIASES = {
     'balanced_accuracy': MACRO_RECALL_METRIC_COLUMN,
 }
 
+RESULT_NUMERIC_COLUMNS = frozenset({
+    'example_count',
+    'sample_count',
+    'n_classes',
+    'n_audit_groups',
+    ACCURACY_METRIC_COLUMN,
+    'macro_precision',
+    MACRO_RECALL_METRIC_COLUMN,
+    'macro_f1',
+    'weighted_precision',
+    'weighted_f1',
+    'n_precision_defined_classes',
+    'n_recall_defined_classes',
+    'n_f1_defined_classes',
+    'matthews_correlation_coefficient',
+    'cohen_kappa',
+    'worst_group_accuracy',
+    'group_accuracy_difference',
+    'mean_demographic_parity_difference',
+    'max_demographic_parity_difference',
+    'n_demographic_parity_defined_classes',
+    'mean_equal_opportunity_difference',
+    'max_equal_opportunity_difference',
+    'n_equal_opportunity_defined_classes',
+    'mean_false_positive_rate_difference',
+    'max_false_positive_rate_difference',
+    'n_false_positive_rate_defined_classes',
+    'mean_equalized_odds_difference',
+    'max_equalized_odds_difference',
+    'n_equalized_odds_defined_classes',
+    'mean_predictive_parity_difference',
+    'max_predictive_parity_difference',
+    'n_predictive_parity_defined_classes',
+    'mean_demographic_parity_ratio',
+    'min_demographic_parity_ratio',
+    'n_demographic_parity_ratio_defined_classes',
+})
+
 FAIRNESS_DIFFERENCE_METRICS = {
     'demographic_parity_difference': 'n_demographic_parity_defined_classes',
     'equal_opportunity_difference': 'n_equal_opportunity_defined_classes',
@@ -42,6 +80,7 @@ FAIRNESS_DIFFERENCE_METRICS = {
     'equalized_odds_difference': 'n_equalized_odds_defined_classes',
     'predictive_parity_difference': 'n_predictive_parity_defined_classes',
 }
+
 
 # Metric notation used in the calculations below:
 # c is a target class, g is an audit group, K is the number of target classes,
@@ -112,23 +151,18 @@ def _validate_metric_inputs(predictions: pd.DataFrame, labels: list[str]) -> Non
     if len(labels) != len(set(labels)):
         raise ValueError('labels cannot contain duplicates')
 
-    required_columns = set(CONDITION_COLUMNS) | {
+    value_columns = CONDITION_COLUMNS + [
         'true_label',
         'predicted_label',
         'audit_group',
-    }
-    missing_columns = sorted(required_columns - set(predictions.columns))
+    ]
+    missing_columns = sorted(set(value_columns) - set(predictions.columns))
     if missing_columns:
         raise ValueError(f'predictions is missing required columns: {missing_columns}')
 
-    value_columns = CONDITION_COLUMNS + ['true_label', 'predicted_label', 'audit_group']
-    columns_with_missing_values = [
-        column for column in value_columns if predictions[column].isna().any()
-    ]
+    columns_with_missing_values = [column for column in value_columns if predictions[column].isna().any()]
     if columns_with_missing_values:
-        raise ValueError(
-            f'predictions contains missing values in: {columns_with_missing_values}'
-        )
+        raise ValueError(f'predictions contains missing values in: {columns_with_missing_values}')
 
     observed_labels = set(predictions['true_label']) | set(predictions['predicted_label'])
     unknown_labels = sorted(observed_labels - set(labels))
@@ -140,20 +174,13 @@ def _condition_metadata(condition_predictions: pd.DataFrame) -> dict[str, Any]:
     """Return metadata after confirming it is constant within a condition."""
 
     inconsistent_columns = [
-        column
-        for column in CONDITION_COLUMNS
-        if condition_predictions[column].nunique(dropna=False) != 1
+        column for column in CONDITION_COLUMNS if condition_predictions[column].nunique(dropna=False) != 1
     ]
     if inconsistent_columns:
         condition = condition_predictions['condition'].iloc[0]
-        raise ValueError(
-            f'Condition {condition!r} has inconsistent metadata columns: '
-            f'{inconsistent_columns}'
-        )
-    return {
-        column: condition_predictions[column].iloc[0]
-        for column in CONDITION_COLUMNS
-    }
+        raise ValueError(f'Condition {condition!r} has inconsistent metadata columns: {inconsistent_columns}')
+
+    return {column: condition_predictions[column].iloc[0] for column in CONDITION_COLUMNS}
 
 
 def _calculate_class_metrics(
@@ -303,7 +330,7 @@ def _calculate_group_metrics(
         equalized_odds_difference = (
             max(equal_opportunity_difference, false_positive_rate_difference)
             if not pd.isna(equal_opportunity_difference)
-            and not pd.isna(false_positive_rate_difference)
+               and not pd.isna(false_positive_rate_difference)
             else np.nan
         )
 
@@ -409,53 +436,41 @@ def _summarize_condition(
     }
 
 
-def calculate_metrics(
+def calculate_condition_metrics(
         predictions: pd.DataFrame,
         labels: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Calculate hard-label classification and group-disparity metrics."""
+    """Calculate every metric table for one prediction condition."""
 
     _validate_metric_inputs(predictions, labels)
-    result_rows: list[dict[str, Any]] = []
-    class_frames: list[pd.DataFrame] = []
-    confusion_rows: list[dict[str, Any]] = []
-    group_rows: list[dict[str, Any]] = []
-    fairness_rows: list[dict[str, Any]] = []
-
-    for _, condition_predictions in predictions.groupby(
-            ['evaluation_split', 'condition'], sort=False
-    ):
-        metadata = _condition_metadata(condition_predictions)
-        class_frame, condition_confusion_rows = _calculate_class_metrics(
-            condition_predictions, metadata, labels
-        )
-        (
-            condition_group_rows,
-            condition_fairness_rows,
+    metadata = _condition_metadata(predictions)
+    class_frame, confusion_rows = _calculate_class_metrics(
+        predictions,
+        metadata,
+        labels,
+    )
+    group_rows, fairness_rows, group_accuracy_values = _calculate_group_metrics(
+        predictions,
+        metadata,
+        labels,
+    )
+    fairness_frame = pd.DataFrame(fairness_rows)
+    result = pd.DataFrame([
+        _summarize_condition(
+            predictions,
+            metadata,
+            class_frame,
+            fairness_frame,
             group_accuracy_values,
-        ) = _calculate_group_metrics(condition_predictions, metadata, labels)
-        fairness_frame = pd.DataFrame(condition_fairness_rows)
-
-        result_rows.append(
-            _summarize_condition(
-                condition_predictions,
-                metadata,
-                class_frame,
-                fairness_frame,
-                group_accuracy_values,
-            )
         )
-        class_frames.append(class_frame)
-        confusion_rows.extend(condition_confusion_rows)
-        group_rows.extend(condition_group_rows)
-        fairness_rows.extend(condition_fairness_rows)
+    ])
 
     return (
-        pd.DataFrame(result_rows),
-        pd.concat(class_frames, ignore_index=True),
+        result,
+        class_frame,
         pd.DataFrame(confusion_rows),
         pd.DataFrame(group_rows),
-        pd.DataFrame(fairness_rows),
+        fairness_frame,
     )
 
 
@@ -512,15 +527,13 @@ def write_best_prompts(
         labels: list[str],
         ranking_metric: str,
         ranking_direction: str,
-        final_results: pd.DataFrame,
+        evaluation_split: str,
 ) -> None:
-    """Save one validation-selected prompt and final-test score per language model."""
+    """Save the best current-split prompt for every language model."""
 
     metric_column = resolve_metric_column(ranking_metric)
     sections: list[str] = []
-    final_by_language_model = final_results.set_index('language_model')
     for best in selected.to_dict('records'):
-        final_result = final_by_language_model.loc[best['language_model']]
         resolved_prompt = prompt_templates[best['prompt_name']].format(
             target=display_column_name(best['target']),
             audit_column=display_column_name(best['audit_column']),
@@ -528,10 +541,9 @@ def write_best_prompts(
         )
         sections.append(
             f'Language model: {best['language_model']}\n'
-            f'Selected on validation metric: {ranking_metric} '
+            f'Selected on {evaluation_split} metric: {ranking_metric} '
             f'({ranking_direction})\n'
-            f'Validation score: {best[metric_column]}\n'
-            f'Final test score: {final_result[metric_column]}\n'
+            f'{evaluation_split.title()} score: {best[metric_column]}\n'
             f'Retrieval method: {best['retrieval_method']}\n'
             f'Embedding model: {best['embedding_model']}\n'
             f'Examples: {best['example_count']}\n'

@@ -152,8 +152,10 @@ deliberate configuration change and runs the same complete condition grid.
 - `evaluation_split`: `validation` or `test`.
 - `professions`: `all` or a unique list of at least two supported professions.
 - `train_size`: `all` or a positive integer. This caps retrieval rows only.
-- `evaluation_per_profession_gender`: positive integer. Evaluation rows equal
-  **profession count × 2 genders × this value**.
+- `evaluation_per_profession_gender`: a positive integer, or `max_balanced` to
+  use the smallest available cell in the selected split. The flow prints the
+  resolved integer. Evaluation rows equal **profession count × 2 genders × the
+  resolved value**.
 - Retrieval methods: `semantic`, `balanced_semantic`. Example order:
   `as_retrieved`, `reverse`, or `shuffle`.
 - Embedding dtype: `float32`, `float16`, or `bfloat16`; language-model dtype may

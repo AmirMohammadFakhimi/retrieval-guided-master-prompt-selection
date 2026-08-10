@@ -40,9 +40,10 @@ dataset:
   # Exact form: all, or a positive integer retrieval-pool cap after filtering.
   train_size: all
 
-  # Positive integer rows per profession-gender cell in the selected split.
-  # Total evaluation rows = professions * 2 * this value. Recommended: 5 for
-  # validation comparison and 10 for a deliberately requested test run.
+  # Exact form: a positive integer, or max_balanced to use the smallest
+  # available profession-gender cell in the selected split. The flow prints the
+  # resolved integer. Total rows = professions * 2 * the resolved value.
+  # Recommended explicit values: 5 for validation and 10 for test.
   evaluation_per_profession_gender: 5
 
 retrieval:

@@ -91,11 +91,16 @@ def _validate_dataset(config: dict[str, Any]) -> int | None:
         if len(professions) != len(set(professions)):
             raise ValueError('dataset.professions cannot contain duplicates')
     _require_integer(dataset_settings.get('shuffle_seed'), 'dataset.shuffle_seed', 0)
-    _require_integer(
-        dataset_settings.get('evaluation_per_profession_gender'),
-        'dataset.evaluation_per_profession_gender',
-        1,
-    )
+    evaluation_per_cell = dataset_settings.get('evaluation_per_profession_gender')
+    if evaluation_per_cell != 'max_balanced' and (
+            isinstance(evaluation_per_cell, bool)
+            or not isinstance(evaluation_per_cell, int)
+            or evaluation_per_cell < 1
+    ):
+        raise ValueError(
+            'dataset.evaluation_per_profession_gender must be a positive '
+            'integer or max_balanced'
+        )
     dataset.task_settings(config)
     return dataset.train_size_limit(config)
 

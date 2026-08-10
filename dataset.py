@@ -221,7 +221,7 @@ def load_data(config: dict[str, Any], project_root: Path) -> dict[str, list[dict
 def select_run_data(
         config: dict[str, Any],
         split_rows: dict[str, list[dict[str, Any]]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     """Select the capped retrieval pool and configured evaluation rows."""
 
     evaluation_split = config['defaults']['evaluation_split']
@@ -245,34 +245,41 @@ def select_run_data(
         )
 
     _, _, professions, _ = task_settings(config)
-    evaluation_per_cell = config['dataset']['evaluation_per_profession_gender']
     available_evaluation = split_rows[evaluation_split]
-    evaluation: list[dict[str, Any]] = []
-    missing_cells: list[tuple[str, str]] = []
+    evaluation_cells: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     progress_bar = tqdm(total=len(professions) * len(GENDERS), desc='Selecting evaluation cells', unit='cell')
     for profession in professions:
         for gender in GENDERS:
-            evaluation_cell = [
+            evaluation_cells[(profession, gender)] = [
                 row
                 for row in available_evaluation
                 if row[Column.PROFESSION] == profession and row[Column.GENDER] == gender
-            ][:evaluation_per_cell]
-
-            evaluation.extend(evaluation_cell)
-
-            if len(evaluation_cell) < evaluation_per_cell:
-                missing_cells.append((profession, gender))
+            ]
             progress_bar.update(1)
     progress_bar.close()
 
+    evaluation_per_profession_gender = config['dataset']['evaluation_per_profession_gender']
+    if evaluation_per_profession_gender == 'max_balanced':
+        empty_cells = [cell for cell, rows in evaluation_cells.items() if not rows]
+        if empty_cells:
+            raise ValueError(
+                f"Dataset {config['dataset']['hub_id']!r} has no {evaluation_split} rows "
+                f'for these profession/gender cells: {empty_cells}'
+            )
+        evaluation_per_cell = min(map(len, evaluation_cells.values()))
+    else:
+        evaluation_per_cell = evaluation_per_profession_gender
+
+    missing_cells = [cell for cell, rows in evaluation_cells.items() if len(rows) < evaluation_per_cell]
     if missing_cells:
         raise ValueError(
             f"Dataset {config['dataset']['hub_id']!r} lacks enough {evaluation_split} rows "
             f"for these profession/gender cells: {missing_cells}"
         )
 
-    return train, evaluation
+    evaluation = [row for rows in evaluation_cells.values() for row in rows[:evaluation_per_cell]]
+    return train, evaluation, evaluation_per_cell
 
 
 def calculate_dataset_counts(config: dict[str, Any], split_rows: dict[str, list[dict[str, Any]]]) -> pd.DataFrame:

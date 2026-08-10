@@ -111,23 +111,23 @@ def _prepare_semantic_resources(
     return semantic_resources
 
 
-def _generate_condition_predictions(
+def _predict_labels_for_condition(
         context: PredictionContext,
-        language_model_condition: dict[str, Any],
-        queries: list[dict[str, Any]],
+        condition: dict[str, Any],
+        evaluation_rows: list[dict[str, Any]],
         tokenizer: PreTrainedTokenizerBase,
         language_model: PreTrainedModel,
 ) -> list[dict[str, Any]]:
-    """Predict every evaluation row for one prompt condition."""
+    """Predict the held-out label for every evaluation row under one condition."""
 
-    retrieval_method = language_model_condition['retrieval_method']
-    embedding_model_id = language_model_condition['embedding_model']
+    retrieval_method = condition['retrieval_method']
+    embedding_model_id = condition['embedding_model']
     semantic_resource = context.semantic_resources[embedding_model_id]
     semantic_table = semantic_resource['table']
     query_vectors = semantic_resource['evaluation_vectors']
 
     rows: list[dict[str, Any]] = []
-    for query_index, query in enumerate(queries):
+    for query_index, query in enumerate(evaluation_rows):
         query_vector = query_vectors[query_index]
         retrieval_key = (retrieval_method, embedding_model_id, query[dataset.Column.ID])
 
@@ -140,10 +140,10 @@ def _generate_condition_predictions(
                 context.training_profession_gender_pairs,
             )
 
-        examples = context.retrieval_cache[retrieval_key][:language_model_condition['example_count']]
+        examples = context.retrieval_cache[retrieval_key][:condition['example_count']]
         examples = modeling.order_examples(
             examples,
-            language_model_condition['example_order'],
+            condition['example_order'],
             context.example_order_seed,
         )
 
@@ -152,7 +152,7 @@ def _generate_condition_predictions(
             examples,
             context.target,
             context.labels,
-            language_model_condition['master_prompt'],
+            condition['master_prompt'],
         )
         predicted_label, label_scores = modeling.score_allowed_labels(
             messages,
@@ -163,16 +163,16 @@ def _generate_condition_predictions(
         )
 
         condition_metadata = {
-            'condition': language_model_condition['condition'],
+            'condition': condition['condition'],
             'target': context.target,
             'audit_column': context.audit_column,
             'retrieval_method': retrieval_method,
             'embedding_model': embedding_model_id,
-            'example_count': language_model_condition['example_count'],
-            'example_order': language_model_condition['example_order'],
-            'prompt_name': language_model_condition['prompt_name'],
-            'master_prompt': language_model_condition['master_prompt'],
-            'language_model': language_model_condition['language_model'],
+            'example_count': condition['example_count'],
+            'example_order': condition['example_order'],
+            'prompt_name': condition['prompt_name'],
+            'master_prompt': condition['master_prompt'],
+            'language_model': condition['language_model'],
             'device': context.device,
             'example_order_seed': context.example_order_seed,
             'dataset_shuffle_seed': context.dataset_shuffle_seed,
@@ -285,15 +285,20 @@ def run_experiment(
 
     source_splits = dataset.load_data(config, root)
     source_dataset_counts = dataset.calculate_dataset_counts(config, source_splits)
-    train, evaluation_rows = dataset.select_run_data(config, source_splits)
+    train, evaluation_rows, evaluation_per_cell = dataset.select_run_data(config, source_splits)
+    if config['dataset']['evaluation_per_profession_gender'] == 'max_balanced':
+        progress(
+            f'Resolved evaluation_per_profession_gender=max_balanced to '
+            f'{evaluation_per_cell} rows per profession/gender cell'
+        )
+
     run_dataset_counts = dataset.calculate_dataset_counts(
         config,
         {'train': train, evaluation_split: evaluation_rows},
     )
     progress(
         f'Loaded {sum(map(len, source_splits.values()))} filtered source rows; '
-        f'selected {len(train)} train and {len(evaluation_rows)} '
-        f'{evaluation_split} rows for this run'
+        f'selected {len(train)} train and {len(evaluation_rows)} {evaluation_split} rows for this run'
     )
 
     embedding_models = config['retrieval']['embedding_models']
@@ -361,23 +366,23 @@ def run_experiment(
         )
 
         try:
-            language_model_conditions = [
+            conditions_for_language_model = [
                 condition
                 for condition in conditions
                 if condition['language_model'] == language_model_id
             ]
             condition_progress_bar = tqdm(
-                language_model_conditions,
+                conditions_for_language_model,
                 desc=f'Evaluating {language_model_id}',
                 unit='condition',
                 position=1,
                 leave=True,
             )
-            for language_model_condition in condition_progress_bar:
+            for condition in condition_progress_bar:
                 condition_predictions = pd.DataFrame(
-                    _generate_condition_predictions(
+                    _predict_labels_for_condition(
                         prediction_context,
-                        language_model_condition,
+                        condition,
                         evaluation_rows,
                         tokenizer,
                         language_model,

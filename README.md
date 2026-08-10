@@ -50,9 +50,10 @@ rows once and returns `train`, `validation` (source `dev`), and `test` mappings.
 This is a data-loading boundary, not permission to evaluate every split.
 
 `select_run_data(config, split_rows)` applies `dataset.train_size`, verifies
-that every retrieval example count fits the selected train pool, and selects
-the configured number of rows from each profession-gender cell in only
-`defaults.evaluation_split`.
+that every retrieval example count fits the selected train pool, and returns
+the train rows, evaluation rows, and resolved rows per profession-gender cell.
+An explicit positive integer uses that many rows; `max_balanced` resolves to
+the smallest available cell in only `defaults.evaluation_split`.
 
 `calculate_dataset_counts(config, split_rows)` is the single composition-count
 implementation. It creates two different views during a run:
@@ -82,8 +83,10 @@ For the study, run once with `defaults.target: profession` and once with
 
 Keep `defaults.evaluation_split: validation` while comparing prompts. The
 single `dataset.evaluation_per_profession_gender` setting controls the selected
-split: use 5 rows per profession-gender cell for validation and 10 for test.
-The total is `number of professions × 2 × evaluation_per_profession_gender`.
+split: use 5 rows per profession-gender cell for validation and 10 for test, or
+use `max_balanced` to select the largest equal cell size available. The flow
+prints the resolved integer before embedding. The total is
+`number of professions × 2 × resolved rows per cell`.
 The unselected split is loaded only for source composition; it is never passed
 to embedding, prediction, metric calculation, ranking, or plotting.
 

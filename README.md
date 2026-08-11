@@ -101,23 +101,25 @@ Important outputs in each timestamped result folder:
   split composition;
 - `plots/`: focused current-split plots for every numeric metric,
   count, support, coverage value, and confusion matrix;
-- split-prefixed class, confusion, group, and fairness CSV outputs.
+- `<split>_target_label_metrics.csv`, `<split>_audit_group_metrics.csv`,
+  `<split>_fairness_metrics.csv`, and `<split>_confusion_matrix.csv`.
 
 Summary plots compare every configured condition in within-language-model rank
-order and highlight `is_best`. Detailed class, group, fairness, coverage, and
-confusion diagnostics focus on the current split's winner for each model; the
-CSV metric tables retain every condition.
+order and highlight `is_best`. Detailed target-label, audit-group, fairness,
+coverage, and confusion diagnostics focus on the current split's winner for
+each model; the CSV metric tables retain every condition.
 
 ## Metric formulas
 
-Notation: $c$ is a target class, $g$ is an audit group, $K$ is the number
-of classes, $N$ is the total number of evaluated rows, $N_g$ is the size of
-group $g$, and $n_c$ is the true support of class $c$. $D_m$ is the set
-of classes where metric $m$ is defined. $TP$, $FP$, $FN$, and $TN$
-are one-vs-rest confusion counts. A zero denominator produces `NaN`; a group
-disparity requires at least two defined group rates.
+Notation: $c$ is a target label evaluated one-vs-rest using both `true_label`
+and `predicted_label`; $g$ is an audit group from the separate audit column;
+$K$ is the number of target labels, $N$ is the total number of evaluated rows,
+$N_g$ is the size of audit group $g$, and $n_c$ is the true support of target
+label $c$. $D_m$ is the set of target labels where metric $m$ is defined.
+$TP$, $FP$, $FN$, and $TN$ are one-vs-rest confusion counts. A zero denominator
+produces `NaN`; a disparity requires at least two defined audit-group rates.
 
-For each class:
+For each target label:
 
 $$
 Precision_c=PPV_c=\frac{TP_c}{TP_c+FP_c},\quad
@@ -132,7 +134,16 @@ FNR_c=\frac{FN_c}{FN_c+TP_c},\quad
 NPV_c=\frac{TN_c}{TN_c+FN_c}
 $$
 
-For any class metric $m_c$, undefined values are omitted from its aggregate:
+Whenever the corresponding denominator is nonzero,
+$FPR_c=1-Specificity_c$ and $FNR_c=1-Recall_c$.
+
+The target-label and audit-group tables use the same one-vs-rest column names and
+order: positive support, negative support, predicted positives, confusion
+counts, selection rate, precision, recall, F1, specificity, FPR, FNR, and NPV.
+The audit-group table additionally identifies the audit group and reports its
+size and overall multiclass accuracy.
+
+For any target-label metric $m_c$, undefined values are omitted from its aggregate:
 
 $$
 Accuracy=\frac{\sum_cTP_c}{N},\quad
@@ -140,7 +151,7 @@ Macro(m)=\frac{1}{|D_m|}\sum_{c\in D_m}m_c,\quad
 Weighted(m)=\frac{\sum_{c\in D_m}n_cm_c}{\sum_{c\in D_m}n_c}
 $$
 
-When $m$ is defined for every class, $|D_m|=K$.
+When $m$ is defined for every target label, $|D_m|=K$.
 
 In this single-label multiclass task, let $T=\sum_cTP_c$ be the number of
 correct rows and $E=\sum_cFP_c=\sum_cFN_c$ the number of errors. Since
@@ -156,7 +167,7 @@ WeightedRecall=\frac{1}{N}\sum_{c:n_c>0}n_c\frac{TP_c}{n_c}
 BalancedAccuracy=\frac{1}{|D_R|}\sum_{c\in D_R}Recall_c=MacroRecall
 $$
 
-$D_R$ is the set of classes whose recall is defined. The results store these
+$D_R$ is the set of target labels whose recall is defined. The results store these
 two equality families once, under the columns
 `accuracy / micro_precision / micro_recall / micro_f1 / weighted_recall` and
 `macro_recall / balanced_accuracy`. Any individual standard name remains
@@ -164,7 +175,7 @@ valid as `ranking_metric`.
 
 For multiclass MCC, $C$ is the confusion matrix,
 $s=\sum_{ij}C_{ij}$, $q=\operatorname{trace}(C)$,
-$p_k=\sum_iC_{ik}$ is the predicted total for class $k$, and
+$p_k=\sum_iC_{ik}$ is the predicted total for target label $k$, and
 $t_k=\sum_jC_{kj}$ is its true total:
 
 $$
@@ -179,7 +190,7 @@ $$
 \kappa=\frac{p_o-p_e}{1-p_e}
 $$
 
-Within group $g$:
+Within audit group $g$:
 
 $$
 SR_{c,g}=\frac{TP_{c,g}+FP_{c,g}}{N_g},\quad
@@ -192,7 +203,11 @@ PPV_{c,g}=\frac{TP_{c,g}}{TP_{c,g}+FP_{c,g}},\qquad
 Accuracy_g=\frac{\text{correct rows in }g}{N_g}
 $$
 
-Let $Range_g(x)=\max_gx_g-\min_gx_g$. The classwise fairness metrics are:
+Here $TPR_{c,g}=Recall_{c,g}$ and $PPV_{c,g}=Precision_{c,g}$. Within each
+audit group, $FPR_{c,g}=1-Specificity_{c,g}$ and
+$FNR_{c,g}=1-Recall_{c,g}$ whenever the corresponding denominator is nonzero.
+
+Let $Range_g(x)=\max_gx_g-\min_gx_g$. The target-label fairness metrics are:
 
 $$
 DPDiff_c=Range_g(SR_{c,g}),\quad
@@ -206,9 +221,9 @@ EqualizedOddsDiff_c=\max(EqualOpportunityDiff_c,FPRDiff_c),\quad
 PredictiveParityDiff_c=Range_g(PPV_{c,g})
 $$
 
-Finally, $WorstGroupAccuracy=\min_gAccuracy_g$ and
-$GroupAccuracyDiff=Range_g(Accuracy_g)$. For classwise disparity $d_c$, let
-$D_d$ be the classes where it is defined:
+Finally, $WorstAuditGroupAccuracy=\min_gAccuracy_g$ and
+$AuditGroupAccuracyDiff=Range_g(Accuracy_g)$. For target-label disparity $d_c$,
+let $D_d$ be the target labels where it is defined:
 
 $$
 MeanDisparity(d)=\frac{1}{|D_d|}\sum_{c\in D_d}d_c,\quad
@@ -216,7 +231,7 @@ WorstDifference(d)=\max_{c\in D_d}d_c,\quad
 WorstDPRatio=\min_{c\in D_d}DPRatio_c
 $$
 
-The corresponding defined-class count is $|D_d|$.
+The corresponding defined-target-label count is $|D_d|$.
 
 The checked-in configuration has two retrieval methods, two embedding models,
 two example counts, one example order, two master prompts, and four language models:

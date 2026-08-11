@@ -28,7 +28,7 @@ class PredictionContext:
     evaluation_split: str
     target: dataset.Column
     audit_column: dataset.Column
-    labels: list[str]
+    target_labels: list[str]
     max_example_count: int
     device: str
     semantic_resources: dict[str, modeling.SemanticResource]
@@ -151,12 +151,12 @@ def _predict_labels_for_condition(
             query,
             examples,
             context.target,
-            context.labels,
+            context.target_labels,
             condition['master_prompt'],
         )
         predicted_label, label_scores = modeling.score_allowed_labels(
             messages,
-            context.labels,
+            context.target_labels,
             tokenizer,
             language_model,
             context.device,
@@ -214,7 +214,7 @@ def _write_run_outputs(
         root: Path,
         config: dict[str, Any],
         result_tables: dict[str, pd.DataFrame],
-        labels: list[str],
+        target_labels: list[str],
 ) -> dict[str, Any]:
     """Write experiment tables and reports, then return their paths and data."""
 
@@ -249,7 +249,7 @@ def _write_run_outputs(
         best_prompts_path,
         selected,
         config['prompt_templates'],
-        labels,
+        target_labels,
         defaults['ranking_metric'],
         defaults['ranking_direction'],
         evaluation_split,
@@ -275,7 +275,7 @@ def run_experiment(
     root = Path(project_root).resolve()
     defaults = config['defaults']
     evaluation_split = defaults['evaluation_split']
-    target, audit_column, _, labels = dataset.task_settings(config)
+    target, audit_column, _, target_labels = dataset.task_settings(config)
 
     inference_settings = config['inference']
     language_models_config = inference_settings['language_models']
@@ -325,7 +325,7 @@ def run_experiment(
         evaluation_split=evaluation_split,
         target=target,
         audit_column=audit_column,
-        labels=labels,
+        target_labels=target_labels,
         max_example_count=max(example_counts),
         device=device,
         semantic_resources=semantic_resources,
@@ -344,9 +344,9 @@ def run_experiment(
 
     prediction_frames: list[pd.DataFrame] = []
     result_frames: list[pd.DataFrame] = []
-    class_metric_frames: list[pd.DataFrame] = []
+    target_label_metric_frames: list[pd.DataFrame] = []
     confusion_frames: list[pd.DataFrame] = []
-    group_metric_frames: list[pd.DataFrame] = []
+    audit_group_metric_frames: list[pd.DataFrame] = []
     fairness_metric_frames: list[pd.DataFrame] = []
     language_model_progress_bar = tqdm(
         language_models_config,
@@ -388,21 +388,20 @@ def run_experiment(
                         language_model,
                     )
                 )
+
                 (
                     condition_results,
-                    condition_class_metrics,
+                    condition_target_label_metrics,
                     condition_confusion,
-                    condition_group_metrics,
+                    condition_audit_group_metrics,
                     condition_fairness_metrics,
-                ) = evaluation.calculate_condition_metrics(
-                    condition_predictions,
-                    labels,
-                )
+                ) = evaluation.calculate_condition_metrics(condition_predictions, target_labels)
+
                 prediction_frames.append(condition_predictions)
                 language_model_result_frames.append(condition_results)
-                class_metric_frames.append(condition_class_metrics)
+                target_label_metric_frames.append(condition_target_label_metrics)
                 confusion_frames.append(condition_confusion)
-                group_metric_frames.append(condition_group_metrics)
+                audit_group_metric_frames.append(condition_audit_group_metrics)
                 fairness_metric_frames.append(condition_fairness_metrics)
 
             result_frames.append(
@@ -421,9 +420,9 @@ def run_experiment(
     result_tables = {
         'predictions': pd.concat(prediction_frames, ignore_index=True),
         'results': results,
-        'class_metrics': pd.concat(class_metric_frames, ignore_index=True),
+        'target_label_metrics': pd.concat(target_label_metric_frames, ignore_index=True),
         'confusion_matrix': pd.concat(confusion_frames, ignore_index=True),
-        'group_metrics': pd.concat(group_metric_frames, ignore_index=True),
+        'audit_group_metrics': pd.concat(audit_group_metric_frames, ignore_index=True),
         'fairness_metrics': pd.concat(fairness_metric_frames, ignore_index=True),
         'source_dataset_counts': source_dataset_counts,
         'run_dataset_counts': run_dataset_counts,
@@ -432,7 +431,7 @@ def run_experiment(
         root,
         config,
         result_tables,
-        labels,
+        target_labels,
     )
 
     progress(f'Finished: {output['run_dir']}')

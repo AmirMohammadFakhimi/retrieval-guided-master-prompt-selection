@@ -25,7 +25,7 @@ QUALITY_METRICS: tuple[MetricSpec, ...] = (
     ('macro_f1', 'Macro F1'),
     ('weighted_precision', 'Weighted precision'),
     ('weighted_f1', 'Weighted F1'),
-    ('worst_group_accuracy', 'Worst-group accuracy'),
+    ('worst_audit_group_accuracy', 'Worst audit-group accuracy'),
 )
 
 AGREEMENT_METRICS: tuple[MetricSpec, ...] = (
@@ -42,7 +42,7 @@ MEAN_FAIRNESS_DIFFERENCES: tuple[MetricSpec, ...] = (
 )
 
 WORST_FAIRNESS_DIFFERENCES: tuple[MetricSpec, ...] = (
-    ('group_accuracy_difference', 'Group-accuracy difference'),
+    ('audit_group_accuracy_difference', 'Audit-group accuracy difference'),
     ('max_demographic_parity_difference', 'Maximum demographic-parity difference'),
     ('max_equal_opportunity_difference', 'Maximum equal-opportunity difference'),
     ('max_false_positive_rate_difference', 'Maximum false-positive-rate difference'),
@@ -57,42 +57,43 @@ FAIRNESS_RATIOS: tuple[MetricSpec, ...] = (
 
 SUMMARY_SIZE_COLUMNS: tuple[MetricSpec, ...] = (
     ('sample_count', 'Evaluated rows'),
-    ('n_classes', 'Target classes'),
+    ('n_target_labels', 'Target labels'),
     ('n_audit_groups', 'Audit groups'),
 )
 
 SUMMARY_COVERAGE_COLUMNS: tuple[MetricSpec, ...] = (
-    ('n_precision_defined_classes', 'Classes defining precision'),
-    ('n_recall_defined_classes', 'Classes defining recall'),
-    ('n_f1_defined_classes', 'Classes defining F1'),
+    ('n_precision_defined_target_labels', 'Target labels defining precision'),
+    ('n_recall_defined_target_labels', 'Target labels defining recall'),
+    ('n_f1_defined_target_labels', 'Target labels defining F1'),
     (
-        'n_demographic_parity_defined_classes',
-        'Classes defining demographic-parity difference',
+        'n_demographic_parity_defined_target_labels',
+        'Target labels defining demographic-parity difference',
     ),
     (
-        'n_demographic_parity_ratio_defined_classes',
-        'Classes defining demographic-parity ratio',
+        'n_demographic_parity_ratio_defined_target_labels',
+        'Target labels defining demographic-parity ratio',
     ),
     (
-        'n_equal_opportunity_defined_classes',
-        'Classes defining equal-opportunity difference',
+        'n_equal_opportunity_defined_target_labels',
+        'Target labels defining equal-opportunity difference',
     ),
     (
-        'n_false_positive_rate_defined_classes',
-        'Classes defining false-positive-rate difference',
+        'n_false_positive_rate_defined_target_labels',
+        'Target labels defining false-positive-rate difference',
     ),
     (
-        'n_equalized_odds_defined_classes',
-        'Classes defining equalized-odds difference',
+        'n_equalized_odds_defined_target_labels',
+        'Target labels defining equalized-odds difference',
     ),
     (
-        'n_predictive_parity_defined_classes',
-        'Classes defining predictive-parity difference',
+        'n_predictive_parity_defined_target_labels',
+        'Target labels defining predictive-parity difference',
     ),
 )
 
-CLASS_RATE_COLUMNS: tuple[MetricSpec, ...] = (
-    ('precision', 'Precision'),
+TARGET_LABEL_RATE_COLUMNS: tuple[MetricSpec, ...] = (
+    ('selection_rate', 'Selection rate'),
+    ('precision', 'Precision / positive predictive value'),
     ('recall', 'Recall / true-positive rate'),
     ('f1', 'F1'),
     ('specificity', 'Specificity / true-negative rate'),
@@ -101,26 +102,7 @@ CLASS_RATE_COLUMNS: tuple[MetricSpec, ...] = (
     ('negative_predictive_value', 'Negative predictive value'),
 )
 
-CLASS_COUNT_COLUMNS: tuple[MetricSpec, ...] = (
-    ('support', 'True support'),
-    ('predicted_count', 'Predicted count'),
-    ('tp', 'True positives'),
-    ('fp', 'False positives'),
-    ('fn', 'False negatives'),
-    ('tn', 'True negatives'),
-)
-
-GROUP_RATE_COLUMNS: tuple[MetricSpec, ...] = (
-    ('selection_rate', 'Selection rate'),
-    ('true_positive_rate', 'True-positive rate'),
-    ('false_positive_rate', 'False-positive rate'),
-    ('false_negative_rate', 'False-negative rate'),
-    ('positive_predictive_value', 'Positive predictive value'),
-    ('specificity', 'Specificity / true-negative rate'),
-    ('negative_predictive_value', 'Negative predictive value'),
-)
-
-GROUP_COUNT_COLUMNS: tuple[MetricSpec, ...] = (
+TARGET_LABEL_COUNT_COLUMNS: tuple[MetricSpec, ...] = (
     ('positive_support', 'Positive support'),
     ('negative_support', 'Negative support'),
     ('predicted_positive', 'Predicted positive'),
@@ -130,7 +112,10 @@ GROUP_COUNT_COLUMNS: tuple[MetricSpec, ...] = (
     ('tn', 'True negatives'),
 )
 
-FAIRNESS_CLASS_COLUMNS: tuple[MetricSpec, ...] = (
+AUDIT_GROUP_RATE_COLUMNS = TARGET_LABEL_RATE_COLUMNS
+AUDIT_GROUP_COUNT_COLUMNS = TARGET_LABEL_COUNT_COLUMNS
+
+FAIRNESS_TARGET_LABEL_COLUMNS: tuple[MetricSpec, ...] = (
     ('demographic_parity_difference', 'Demographic-parity difference'),
     ('demographic_parity_ratio', 'Demographic-parity ratio'),
     ('equal_opportunity_difference', 'Equal-opportunity difference'),
@@ -140,11 +125,14 @@ FAIRNESS_CLASS_COLUMNS: tuple[MetricSpec, ...] = (
 )
 
 FAIRNESS_COVERAGE_COLUMNS: tuple[MetricSpec, ...] = (
-    ('groups_compared', 'Groups compared'),
-    ('selection_rate_groups_defined', 'Groups defining selection rate'),
-    ('tpr_groups_defined', 'Groups defining true-positive rate'),
-    ('fpr_groups_defined', 'Groups defining false-positive rate'),
-    ('ppv_groups_defined', 'Groups defining positive predictive value'),
+    ('n_audit_groups_compared', 'Audit groups compared'),
+    ('n_selection_rate_defined_audit_groups', 'Audit groups defining selection rate'),
+    ('n_recall_defined_audit_groups', 'Audit groups defining recall'),
+    (
+        'n_false_positive_rate_defined_audit_groups',
+        'Audit groups defining false-positive rate',
+    ),
+    ('n_precision_defined_audit_groups', 'Audit groups defining precision'),
 )
 
 SUMMARY_METRICS = (
@@ -194,26 +182,26 @@ def _condition_labels(frame: pd.DataFrame) -> list[str]:
     ]
 
 
-def _class_labels(frame: pd.DataFrame) -> list[str]:
+def _target_label_labels(frame: pd.DataFrame) -> list[str]:
     return [
-        f'{row.language_model} | class={row.target_class}'
+        f'{row.language_model} | target label={row.target_label}'
         for row in frame.itertuples(index=False)
     ]
 
 
-def _group_labels(frame: pd.DataFrame) -> list[str]:
+def _target_label_audit_group_labels(frame: pd.DataFrame) -> list[str]:
     return [
         (
-            f'{row.language_model} | class={row.target_class} | '
-            f'group={row.audit_group}'
+            f'{row.language_model} | target label={row.target_label} | '
+            f'audit group={row.audit_group}'
         )
         for row in frame.itertuples(index=False)
     ]
 
 
-def _group_level_labels(frame: pd.DataFrame) -> list[str]:
+def _audit_group_labels(frame: pd.DataFrame) -> list[str]:
     return [
-        f'{row.language_model} | group={row.audit_group}'
+        f'{row.language_model} | audit group={row.audit_group}'
         for row in frame.itertuples(index=False)
     ]
 
@@ -318,7 +306,7 @@ def _create_summary_plots(
     plot_frame = frame.sort_values(
         ['language_model', 'rank'], kind='stable'
     ).reset_index(drop=True)
-    labels = _condition_labels(plot_frame)
+    condition_labels = _condition_labels(plot_frame)
     selected = plot_frame['is_best']
     context = _context_title(plot_frame)
     plot_specs = (
@@ -328,13 +316,13 @@ def _create_summary_plots(
             'mean_fairness_differences',
             MEAN_FAIRNESS_DIFFERENCES,
             (0.0, 1.0),
-            'Mean classwise fairness differences',
+            'Mean target-label fairness differences',
         ),
         (
             'worst_fairness_differences',
             WORST_FAIRNESS_DIFFERENCES,
             (0.0, 1.0),
-            'Worst classwise and group-accuracy differences',
+            'Worst target-label and audit-group accuracy differences',
         ),
         (
             'fairness_ratios',
@@ -344,10 +332,10 @@ def _create_summary_plots(
         ),
         ('sample_counts', SUMMARY_SIZE_COLUMNS, None, 'Evaluation sizes'),
         (
-            'defined_class_counts',
+            'defined_target_label_counts',
             SUMMARY_COVERAGE_COLUMNS,
             None,
-            'Classes defining each aggregate metric',
+            'Target labels defining each aggregate metric',
         ),
     )
     plots: dict[str, Path] = {}
@@ -357,7 +345,7 @@ def _create_summary_plots(
         _plot_metric_panels(
             plot_frame,
             metrics,
-            labels,
+            condition_labels,
             f'{split.title()} — {plot_title}\n{context}',
             path,
             bounds=bounds,
@@ -448,27 +436,27 @@ def create_metric_plots(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     results = result_tables['results']
-    class_metrics = result_tables['class_metrics']
-    group_metrics = result_tables['group_metrics']
+    target_label_metrics = result_tables['target_label_metrics']
+    audit_group_metrics = result_tables['audit_group_metrics']
     fairness_metrics = result_tables['fairness_metrics']
     confusion_matrix = result_tables['confusion_matrix']
 
     selected_conditions = set(
         results.loc[results['is_best'], 'condition']
     )
-    best_class_metrics = class_metrics.loc[
-        class_metrics['condition'].isin(selected_conditions)
-    ].sort_values(['language_model', 'target_class'], kind='stable').reset_index(
+    best_target_label_metrics = target_label_metrics.loc[
+        target_label_metrics['condition'].isin(selected_conditions)
+    ].sort_values(['language_model', 'target_label'], kind='stable').reset_index(
         drop=True
     )
-    best_group_metrics = group_metrics.loc[
-        group_metrics['condition'].isin(selected_conditions)
+    best_audit_group_metrics = audit_group_metrics.loc[
+        audit_group_metrics['condition'].isin(selected_conditions)
     ].sort_values(
-        ['language_model', 'target_class', 'audit_group'], kind='stable'
+        ['language_model', 'target_label', 'audit_group'], kind='stable'
     ).reset_index(drop=True)
     best_fairness_metrics = fairness_metrics.loc[
         fairness_metrics['condition'].isin(selected_conditions)
-    ].sort_values(['language_model', 'target_class'], kind='stable').reset_index(
+    ].sort_values(['language_model', 'target_label'], kind='stable').reset_index(
         drop=True
     )
     best_confusion = confusion_matrix.loc[
@@ -476,7 +464,7 @@ def create_metric_plots(
     ].sort_values(
         ['language_model', 'true_label', 'predicted_label'], kind='stable'
     ).reset_index(drop=True)
-    best_group_level = best_group_metrics.drop_duplicates(
+    best_audit_group_level = best_audit_group_metrics.drop_duplicates(
         ['language_model', 'condition', 'audit_group']
     ).sort_values(['language_model', 'audit_group'], kind='stable').reset_index(
         drop=True
@@ -489,22 +477,22 @@ def create_metric_plots(
         {'example_count', 'rank'},
     )
     _validate_numeric_coverage(
-        'class_metrics',
-        class_metrics,
-        _column_names(CLASS_RATE_COLUMNS + CLASS_COUNT_COLUMNS),
+        'target_label_metrics',
+        target_label_metrics,
+        _column_names(TARGET_LABEL_RATE_COLUMNS + TARGET_LABEL_COUNT_COLUMNS),
         {'example_count'},
     )
     _validate_numeric_coverage(
-        'group_metrics',
-        group_metrics,
-        _column_names(GROUP_RATE_COLUMNS + GROUP_COUNT_COLUMNS)
-        | {'group_n', 'group_accuracy'},
+        'audit_group_metrics',
+        audit_group_metrics,
+        _column_names(AUDIT_GROUP_RATE_COLUMNS + AUDIT_GROUP_COUNT_COLUMNS)
+        | {'audit_group_n', 'audit_group_accuracy'},
         {'example_count'},
     )
     _validate_numeric_coverage(
         'fairness_metrics',
         fairness_metrics,
-        _column_names(FAIRNESS_CLASS_COLUMNS + FAIRNESS_COVERAGE_COLUMNS),
+        _column_names(FAIRNESS_TARGET_LABEL_COLUMNS + FAIRNESS_COVERAGE_COLUMNS),
         {'example_count'},
     )
     _validate_numeric_coverage(
@@ -519,76 +507,76 @@ def create_metric_plots(
 
     detail_specs = (
         (
-            f'{evaluation_split}_best_class_rates',
-            best_class_metrics,
-            CLASS_RATE_COLUMNS,
-            _class_labels(best_class_metrics),
-            f'{evaluation_split.title()} best-condition per-class rates',
+            f'{evaluation_split}_best_target_label_rates',
+            best_target_label_metrics,
+            TARGET_LABEL_RATE_COLUMNS,
+            _target_label_labels(best_target_label_metrics),
+            f'{evaluation_split.title()} best-condition per-target-label rates',
             (0.0, 1.0),
         ),
         (
-            f'{evaluation_split}_best_class_counts',
-            best_class_metrics,
-            CLASS_COUNT_COLUMNS,
-            _class_labels(best_class_metrics),
-            f'{evaluation_split.title()} best-condition per-class counts',
+            f'{evaluation_split}_best_target_label_counts',
+            best_target_label_metrics,
+            TARGET_LABEL_COUNT_COLUMNS,
+            _target_label_labels(best_target_label_metrics),
+            f'{evaluation_split.title()} best-condition per-target-label counts',
             None,
         ),
         (
-            f'{evaluation_split}_best_group_accuracy',
-            best_group_level,
-            (('group_accuracy', 'Group accuracy'),),
-            _group_level_labels(best_group_level),
-            f'{evaluation_split.title()} best-condition group accuracy',
+            f'{evaluation_split}_best_audit_group_accuracy',
+            best_audit_group_level,
+            (('audit_group_accuracy', 'Audit-group accuracy'),),
+            _audit_group_labels(best_audit_group_level),
+            f'{evaluation_split.title()} best-condition audit-group accuracy',
             (0.0, 1.0),
         ),
         (
-            f'{evaluation_split}_best_group_size',
-            best_group_level,
-            (('group_n', 'Group size'),),
-            _group_level_labels(best_group_level),
-            f'{evaluation_split.title()} best-condition group sizes',
+            f'{evaluation_split}_best_audit_group_size',
+            best_audit_group_level,
+            (('audit_group_n', 'Audit-group size'),),
+            _audit_group_labels(best_audit_group_level),
+            f'{evaluation_split.title()} best-condition audit-group sizes',
             None,
         ),
         (
-            f'{evaluation_split}_best_group_class_rates',
-            best_group_metrics,
-            GROUP_RATE_COLUMNS,
-            _group_labels(best_group_metrics),
-            f'{evaluation_split.title()} best-condition per-class/per-group rates',
+            f'{evaluation_split}_best_target_label_rates_by_audit_group',
+            best_audit_group_metrics,
+            AUDIT_GROUP_RATE_COLUMNS,
+            _target_label_audit_group_labels(best_audit_group_metrics),
+            f'{evaluation_split.title()} best-condition target-label rates by audit group',
             (0.0, 1.0),
         ),
         (
-            f'{evaluation_split}_best_group_class_counts',
-            best_group_metrics,
-            GROUP_COUNT_COLUMNS,
-            _group_labels(best_group_metrics),
-            f'{evaluation_split.title()} best-condition per-class/per-group counts',
+            f'{evaluation_split}_best_target_label_counts_by_audit_group',
+            best_audit_group_metrics,
+            AUDIT_GROUP_COUNT_COLUMNS,
+            _target_label_audit_group_labels(best_audit_group_metrics),
+            f'{evaluation_split.title()} best-condition target-label counts by audit group',
             None,
         ),
         (
-            f'{evaluation_split}_best_classwise_fairness',
+            f'{evaluation_split}_best_target_label_fairness',
             best_fairness_metrics,
-            FAIRNESS_CLASS_COLUMNS,
-            _class_labels(best_fairness_metrics),
-            f'{evaluation_split.title()} best-condition classwise fairness metrics',
+            FAIRNESS_TARGET_LABEL_COLUMNS,
+            _target_label_labels(best_fairness_metrics),
+            f'{evaluation_split.title()} best-condition target-label fairness metrics',
             (0.0, 1.0),
         ),
         (
             f'{evaluation_split}_best_fairness_coverage',
             best_fairness_metrics,
             FAIRNESS_COVERAGE_COLUMNS,
-            _class_labels(best_fairness_metrics),
+            _target_label_labels(best_fairness_metrics),
             f'{evaluation_split.title()} best-condition fairness coverage',
             None,
         ),
     )
-    for name, frame, metrics, labels, title, bounds in detail_specs:
+    for name, frame, metrics, row_labels, title, bounds in detail_specs:
         path = output_dir / f'{name}.png'
         _plot_metric_panels(
             frame,
             metrics,
-            labels,
+            row_labels,
             f'{title}\n{_context_title(frame)}',
             path,
             bounds=bounds,

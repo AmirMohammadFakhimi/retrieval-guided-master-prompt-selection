@@ -97,9 +97,9 @@ def run_from_yaml(config_text: str):
             status,
             selected,
             _preview(results),
-            _preview(output['class_metrics']),
+            _preview(output['target_label_metrics']),
             _preview(output['fairness_metrics']),
-            _preview(output['group_metrics']),
+            _preview(output['audit_group_metrics']),
             _preview(output['confusion_matrix']),
             _preview(selected_predictions),
             _preview(output['source_dataset_counts']),
@@ -186,17 +186,20 @@ score(c)=\frac{1}{|T_c|}\sum_j\log P(t_j\mid prompt,t_{<j}),\qquad
 \hat c=\arg\max_c score(c)
 $$
 
-For target class $c$, precision $=TP/(TP+FP)$, recall $=TP/(TP+FN)$, and
-$F1=2TP/(2TP+FP+FN)$. Macro metrics average defined class rates; weighted
-metrics weight them by true support. In single-label multiclass classification,
+For target label $c$, precision $=TP/(TP+FP)$, recall $=TP/(TP+FN)$, and
+$F1=2TP/(2TP+FP+FN)$. Macro metrics average defined target-label rates;
+$Precision=PPV$, $Recall=TPR$, and $Specificity=TNR$. Whenever the corresponding
+denominator is nonzero, $FPR=1-Specificity$ and $FNR=1-Recall$. Weighted metrics
+use true target-label support. In single-label multiclass classification,
 accuracy = micro precision = micro recall = micro F1 = weighted recall, and
 balanced accuracy = macro recall.
 
 For audit group $g$, selection rate $SR_{c,g}=(TP+FP)/N_g$. Demographic-parity
 difference is $\max_g SR_{c,g}-\min_g SR_{c,g}$. Equal-opportunity difference
-is the range of group TPR; equalized-odds difference is the larger of the TPR
-and FPR ranges. Predictive-parity difference is the range of group precision.
-A missing denominator produces `NaN`, and disparity needs two defined groups.
+is the range of audit-group TPR; equalized-odds difference is the larger of the
+TPR and FPR ranges. Predictive-parity difference is the range of audit-group
+precision. A missing denominator produces `NaN`, and disparity needs two
+defined audit groups.
 Quality and fairness tables should be interpreted together.
 """
             )
@@ -222,11 +225,15 @@ Quality and fairness tables should be interpreted together.
                     interactive=False,
                 )
             with gr.Tab('Detailed metrics'):
-                class_metrics = gr.Dataframe(label='Per-class metrics', interactive=False)
-                fairness_metrics = gr.Dataframe(
-                    label='Classwise group disparities', interactive=False
+                target_label_metrics = gr.Dataframe(
+                    label='Per-target-label metrics', interactive=False
                 )
-                group_metrics = gr.Dataframe(label='Group rates and supports', interactive=False)
+                fairness_metrics = gr.Dataframe(
+                    label='Target-label disparities across audit groups', interactive=False
+                )
+                audit_group_metrics = gr.Dataframe(
+                    label='Target-label rates and supports by audit group', interactive=False
+                )
                 confusion_matrix = gr.Dataframe(label='Confusion counts', interactive=False)
             with gr.Tab('Best-condition predictions'):
                 predictions = gr.Dataframe(
@@ -261,9 +268,9 @@ Quality and fairness tables should be interpreted together.
                 status,
                 best_conditions,
                 all_rankings,
-                class_metrics,
+                target_label_metrics,
                 fairness_metrics,
-                group_metrics,
+                audit_group_metrics,
                 confusion_matrix,
                 predictions,
                 source_counts,

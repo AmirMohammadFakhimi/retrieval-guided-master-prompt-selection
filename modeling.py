@@ -427,28 +427,28 @@ def build_prompt(
         query: dict[str, Any],
         examples: list[dict[str, Any]],
         target: Column,
-        labels: list[str],
+        target_labels: list[str],
         master_prompt: str,
 ) -> list[dict[str, str]]:
     """Build a structured chat with demonstrations and a target-free query."""
 
-    # Rows must contain decoded class names from load_data, not raw numeric IDs.
+    # Rows must contain decoded target-label names from load_data, not raw numeric IDs.
     audit_column = TARGET_TO_AUDIT_COLUMN[target]
     target_name = display_column_name(target)
     audit_column_name = display_column_name(audit_column)
-    labels_text = ', '.join(labels)
+    target_labels_text = ', '.join(target_labels)
     try:
         instruction = master_prompt.format(
             target=target_name,
             audit_column=audit_column_name,
-            labels=labels_text,
+            labels=target_labels_text,
         )
     except KeyError as exc:
-        raise ValueError(f'Prompt templates may use only {target}, {audit_column}, and {labels}') from exc
+        raise ValueError('Prompt templates may use only {target}, {audit_column}, and {labels}') from exc
 
     instruction_block = (
         f'{instruction}\n'
-        f'Allowed values for {target_name}: {labels_text}.\n'
+        f'Allowed values for {target_name}: {target_labels_text}.\n'
         'Output exactly one allowed value and no explanation.'
     )
 
@@ -527,7 +527,7 @@ def _apply_chat_template(messages: list[dict[str, str]], tokenizer: PreTrainedTo
 
 def score_allowed_labels(
         messages: list[dict[str, str]],
-        labels: list[str],
+        allowed_labels: list[str],
         tokenizer: PreTrainedTokenizerBase,
         language_model: PreTrainedModel,
         device: str,
@@ -542,7 +542,7 @@ def score_allowed_labels(
     to keep accelerator memory small.
     """
 
-    if not labels:
+    if not allowed_labels:
         raise ValueError('At least one allowed label is required')
 
     context_length = _language_model_context_length(tokenizer, language_model)
@@ -557,7 +557,7 @@ def score_allowed_labels(
 
     scores: dict[str, float] = {}
     reference_prompt_ids: torch.Tensor | None = None
-    for label in labels:
+    for label in allowed_labels:
         full_answer_ids = _apply_chat_template(
             [
                 *messages,
@@ -629,5 +629,5 @@ def score_allowed_labels(
             raise RuntimeError(f'Language model returned a non-finite score for allowed label {label}')
         scores[label] = score
 
-    predicted_label = max(labels, key=lambda label: scores[label])
+    predicted_label = max(allowed_labels, key=lambda label: scores[label])
     return predicted_label, scores

@@ -21,15 +21,12 @@ def main() -> None:
     device = modeling.choose_device(config['inference']['device'])
 
     source_rows = dataset.load_source_rows(config, project_root)
-    length_sorted_training_texts = sorted(
-        (
-            row[dataset.Column.HARD_TEXT]
-            for row in source_rows
-            if row[dataset.Column.SPLIT] == 'train'
-        ),
-        key=len,
-        reverse=True,
-    )
+    length_sorted_training_texts: list[str] = [
+        row[dataset.Column.HARD_TEXT]
+        for row in source_rows
+        if row[dataset.Column.SPLIT] == 'train'
+    ]
+    length_sorted_training_texts.sort(key=len, reverse=True)
     measurements = []
 
     for embedding_model in config['retrieval']['embedding_models']:

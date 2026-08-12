@@ -58,12 +58,15 @@ def main() -> None:
                         show_progress_bar=False,
                     )
                     seconds = perf_counter() - started
-                    rows_per_second = len(texts) / seconds
+                    row_count = len(texts)
+                    rows_per_second = row_count / seconds
 
                     measurements.append({
                         'embedding_model': model_id,
                         'batch_size': batch_size,
                         'step': step,
+                        'row_count': row_count,
+                        'seconds': seconds,
                         'rows_per_second': rows_per_second,
                     })
 
@@ -81,15 +84,26 @@ def main() -> None:
         modeling.clear_model_memory(device)
 
     measurements = pd.DataFrame(measurements)
-    output_path = project_root / 'results' / 'embedding_batch_size_benchmark.csv'
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    measurements.to_csv(output_path, index=False)
+    measurements_output_path = project_root / 'results' / 'embedding_batch_size_benchmark_measurements.csv'
+    measurements_output_path.parent.mkdir(parents=True, exist_ok=True)
+    measurements.to_csv(measurements_output_path, index=False)
 
-    report = measurements.groupby(['embedding_model', 'batch_size'], as_index=False)['rows_per_second'].mean()
+    summary = (
+        measurements
+        .groupby(['embedding_model', 'batch_size'], as_index=False)
+        .agg(
+            row_count=('row_count', 'sum'),
+            seconds=('seconds', 'sum'),
+        )
+    )
+    summary['rows_per_second'] = summary['row_count'] / summary['seconds']
+    summary_output_path = project_root / 'results' / 'embedding_batch_size_benchmark_summary.csv'
+    summary.to_csv(summary_output_path, index=False)
 
-    print('\nAverage speed')
-    print(report.to_string(index=False))
-    print(f'\nSaved measurements to {output_path}')
+    print('\nAggregate speed')
+    print(summary.to_string(index=False))
+    print(f'\nSaved measurements to {measurements_output_path}')
+    print(f'Saved aggregate summary to {summary_output_path}')
 
 
 if __name__ == '__main__':

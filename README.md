@@ -106,10 +106,12 @@ To benchmark the step-7 embedding batch size separately, run:
 python benchmark_embedding_batch_sizes.py
 ```
 
-It tests batch sizes 2 through 256 by powers of two. Qwen uses two 2,048-row
-steps and BGE uses five. It times only embedding, prints the average speed for
-each batch size, and stores every step in
-`results/embedding_batch_size_benchmark.csv`.
+It tests batch sizes 1 through 256 by powers of two. Qwen uses two 2,048-row
+steps and BGE uses five. It times only embedding, prints the aggregate speed
+for each batch size, and stores every step in
+`results/embedding_batch_size_benchmark_measurements.csv`. The corresponding
+aggregate summary is stored in
+`results/embedding_batch_size_benchmark_summary.csv`.
 Training texts are globally sorted from longest to shortest before the timed
 chunks are selected, so the benchmark deliberately measures the longest rows.
 Each batch size receives one untimed internal batch as a warm-up before its

@@ -92,7 +92,7 @@ retrieval:
       revision: d4aa6901d3a41ba39fb536a557fa166f842b0e09
       dimension: 1024
       max_sequence_length: 512
-      batch_size: 32
+      batch_size: 8
       dtype: float32
       query_prompt: "Represent this sentence for searching relevant passages: "
 

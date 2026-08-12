@@ -82,6 +82,7 @@ def _validate_dataset(config: dict[str, Any]) -> int | None:
     dataset_settings = config['dataset']
     _require_non_empty_string(dataset_settings.get('file'), 'dataset.file')
     _require_non_empty_string(dataset_settings.get('hub_id'), 'dataset.hub_id')
+    _require_non_empty_string(dataset_settings.get('revision'), 'dataset.revision')
     professions = dataset_settings.get('professions')
     if professions != 'all':
         if not isinstance(professions, list) or not professions:
@@ -155,6 +156,7 @@ def _validate_retrieval(
         raise ValueError('retrieval.embedding_models must contain at least one embedding model')
     required_settings = {
         'id',
+        'revision',
         'dimension',
         'max_sequence_length',
         'batch_size',
@@ -172,6 +174,10 @@ def _validate_retrieval(
             embedding_model['id'],
             f'retrieval.embedding_models[{index}].id',
         ))
+        _require_non_empty_string(
+            embedding_model['revision'],
+            f'retrieval.embedding_models[{index}].revision',
+        )
         for setting in ('dimension', 'max_sequence_length', 'batch_size'):
             _require_integer(
                 embedding_model[setting],

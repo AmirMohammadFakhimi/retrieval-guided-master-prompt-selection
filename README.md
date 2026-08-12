@@ -45,9 +45,19 @@ generation instead of the current label scorer.
 
 ## Dataset flow
 
-`load_data(config, root)` loads and normalizes all profession-filtered source
-rows once and returns `train`, `validation` (source `dev`), and `test` mappings.
-This is a data-loading boundary, not permission to evaluate every split.
+`load_source_rows(config, root)` loads every normalized source row once. When
+the JSONL file is absent, the source dataset is downloaded using the pinned
+`dataset.hub_id` and `dataset.revision`.
+`select_profession_splits(config, rows)` then returns the profession-filtered
+`train`, `validation` (source `dev`), and `test` mappings. This is a
+data-loading boundary, not permission to evaluate every split.
+
+`prepare_embedding_cache(config, root)` is the explicit one-time preparation
+step. It embeds every canonical source-training row for each configured,
+revision-pinned embedding model. SentenceTransformer length-sorts each bounded
+input chunk internally and returns vectors in input order, so LanceDB retains
+canonical training order. Its tables are independent of `dataset.professions`
+and `dataset.train_size`.
 
 `select_run_data(config, split_rows)` applies `dataset.train_size`, verifies
 that every retrieval example count fits the selected train pool, and returns
@@ -63,6 +73,12 @@ implementation. It creates two different views during a run:
 - `run_dataset_counts`: the capped train pool plus only the configured
   evaluation rows, which is authoritative for rows used by the experiment.
 
+An experiment opens the complete tables read-only, filters professions first,
+then applies numeric `train_size` as the first matching rows in the normalized
+dataset's fixed shuffled order. Changing professions, target, prompts, or the
+train cap does not rebuild embeddings. A missing or incomplete cache stops
+the run with an instruction to prepare it explicitly.
+
 ## Run
 
 ```bash
@@ -70,6 +86,11 @@ conda activate prompt-selection
 python -m pip install -r requirements.txt
 python app.py
 ```
+
+In the app, first select **Prepare all training embeddings**. Once preparation
+finishes, **Run configured split** embeds only the selected evaluation queries
+and retrieves exact neighbors from the eligible part of the complete table.
+The notebook exposes the same two explicit calls.
 
 You can also run
 [`Fairness_Aware_ICL_Complete_Pipeline.ipynb`](Fairness_Aware_ICL_Complete_Pipeline.ipynb).
@@ -329,6 +350,6 @@ mathematics is better described as profession-conditioned performance or
 stereotype/association diagnostics. Profession and gender remain separate
 experiments with the same prompt candidates and separate winners.
 
-The checked-in configuration has two retrieval methods, two embedding models,
-two example counts, one example order, two master prompts, and four language models:
-64 conditions per target and configured evaluation split.
+The checked-in configuration has two retrieval methods, one active embedding
+model, two example counts, three example orders, two master prompts, and four
+language models: 96 conditions per target and configured evaluation split.

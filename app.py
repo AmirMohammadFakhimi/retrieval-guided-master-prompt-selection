@@ -7,7 +7,7 @@ import pandas as pd
 import yaml
 
 import evaluation
-from pipeline import run_experiment
+from pipeline import prepare_embedding_cache, run_experiment
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -19,6 +19,27 @@ def _preview(table: pd.DataFrame) -> pd.DataFrame:
     """Keep the UI responsive while preserving complete CSV artifacts."""
 
     return table.head(TABLE_PREVIEW_ROWS)
+
+
+def prepare_from_yaml(config_text: str) -> str:
+    """Prepare complete training embeddings from the edited YAML."""
+
+    try:
+        config = yaml.safe_load(config_text)
+        if not isinstance(config, dict):
+            raise ValueError('The configuration must be a YAML mapping')
+
+        row_counts = prepare_embedding_cache(config, PROJECT_ROOT, print)
+        prepared_lines = [
+            f'- **{model_id}**: {row_count:,} training rows'
+            for model_id, row_count in row_counts.items()
+        ]
+        return '\n'.join([
+            'Complete training-embedding caches are ready.  ',
+            *prepared_lines,
+        ])
+    except Exception as exc:
+        return f'Error: {type(exc).__name__}: {exc}'
 
 
 def run_from_yaml(config_text: str):
@@ -122,15 +143,16 @@ counts never sends it to an encoder or language model.
         with gr.Accordion('1. Experiment flow and split contract', open=True):
             gr.Markdown(
                 """
-1. Load and normalize profession-filtered `train`, `validation` (source `dev`),
-   and `test` rows.
-2. Cap the retrieval train pool, then balance only the configured evaluation
+1. Explicitly prepare reusable embeddings for every canonical training row.
+2. Load profession-filtered `train`, `validation` (source `dev`), and `test`
+   rows, then cap the retrieval training pool.
+3. Filter the complete vector table to that pool and balance only the evaluation
    split by profession and gender.
-3. Embed the selected train and evaluation rows.
-4. Load one language model once; for each of its conditions, predict and
+4. Embed only the selected evaluation rows.
+5. Load one language model once; for each of its conditions, predict and
    immediately calculate metrics.
-5. Rank conditions inside that language model and mark exactly one `is_best`.
-6. Release the model, continue to the next model, then write complete tables,
+6. Rank conditions inside that language model and mark exactly one `is_best`.
+7. Release the model, continue to the next model, then write complete tables,
    plots, and best prompts.
 
 There is no automatic validation-to-test transition. Switching to `test` is a
@@ -144,6 +166,7 @@ deliberate configuration change and runs the same complete condition grid.
 - `target`: `profession` or `gender`; this changes the held-out label and audit
   column, so use separate runs.
 - `evaluation_split`: `validation` or `test`.
+- `dataset.revision`: a non-empty pinned Hugging Face dataset revision.
 - `professions`: `all` or a unique list of at least two supported professions.
 - `train_size`: `all` or a positive integer. This caps retrieval rows only.
 - `evaluation_per_profession_gender`: a positive integer, or `max_balanced` to
@@ -412,7 +435,9 @@ experiments with the same prompt candidates and separate winners.
             lines=38,
             label='Experiment configuration',
         )
-        run_button = gr.Button('Run configured split', variant='primary')
+        with gr.Row():
+            prepare_button = gr.Button('Prepare all training embeddings')
+            run_button = gr.Button('Run configured split', variant='primary')
         status = gr.Markdown()
 
         with gr.Tabs():
@@ -463,6 +488,12 @@ experiments with the same prompt candidates and separate winners.
                     interactive=False,
                 )
 
+        prepare_button.click(
+            prepare_from_yaml,
+            inputs=config_text,
+            outputs=status,
+            concurrency_limit=1,
+        )
         run_button.click(
             run_from_yaml,
             inputs=config_text,

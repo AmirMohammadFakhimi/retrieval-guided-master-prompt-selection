@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 import yaml
+from lancedb.table import LanceTable
 from tqdm.auto import tqdm
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
@@ -76,14 +77,13 @@ def _build_conditions(
 
 
 def _prepare_semantic_resources(
-        train: list[dict[str, Any]],
         evaluation_rows: list[dict[str, Any]],
         embedding_models: list[dict[str, Any]],
+        cached_tables: dict[str, LanceTable],
+        training_filter: str,
         device: str,
-        database_path: Path,
-        progress: Callable[[str], None],
 ) -> dict[str, modeling.SemanticResource]:
-    """Prepare retrieval tables and evaluation vectors for every embedding model."""
+    """Encode evaluation rows against validated complete training tables."""
 
     semantic_resources: dict[str, modeling.SemanticResource] = {}
     progress_bar = tqdm(
@@ -94,18 +94,12 @@ def _prepare_semantic_resources(
     for embedding_model in progress_bar:
         embedding_model_id = embedding_model['id']
 
-        semantic_table, evaluation_vectors = modeling.prepare_semantic_retrieval(
-            train,
-            evaluation_rows,
-            embedding_model,
-            device,
-            database_path,
-            progress,
-        )
+        evaluation_vectors = modeling.encode_embedding_queries(evaluation_rows, embedding_model, device)
 
         semantic_resources[embedding_model_id] = {
-            'table': semantic_table,
+            'table': cached_tables[embedding_model_id],
             'evaluation_vectors': evaluation_vectors,
+            'training_filter': training_filter,
         }
 
     return semantic_resources
@@ -125,6 +119,7 @@ def _predict_labels_for_condition(
     semantic_resource = context.semantic_resources[embedding_model_id]
     semantic_table = semantic_resource['table']
     query_vectors = semantic_resource['evaluation_vectors']
+    training_filter = semantic_resource['training_filter']
 
     rows: list[dict[str, Any]] = []
     for query_index, query in enumerate(evaluation_rows):
@@ -136,6 +131,7 @@ def _predict_labels_for_condition(
                 retrieval_method,
                 query_vector,
                 semantic_table,
+                training_filter,
                 context.max_example_count,
                 context.training_profession_gender_pairs,
             )
@@ -264,6 +260,42 @@ def _write_run_outputs(
     }
 
 
+def prepare_embedding_cache(
+        config: dict[str, Any],
+        project_root: str | Path = '.',
+        progress: Callable[[str], None] = print,
+) -> dict[str, int]:
+    """Explicitly prepare all canonical training embeddings for configured models."""
+
+    configuration.validate_config(config)
+    root = Path(project_root).resolve()
+    source_rows = dataset.load_source_rows(config, root)
+    training_rows = [row for row in source_rows if row[dataset.Column.SPLIT] == 'train']
+    if not training_rows:
+        raise ValueError('The complete canonical training corpus is empty')
+
+    device = modeling.choose_device(config['inference']['device'])
+    database_path = root / config['retrieval']['lancedb_path']
+    progress(f'Using device: {device}')
+    progress(f'Preparing {len(training_rows)} canonical training rows')
+
+    row_counts: dict[str, int] = {}
+    embedding_models = config['retrieval']['embedding_models']
+    progress_bar = tqdm(embedding_models, desc='Preparing complete embedding caches', unit='model')
+    for embedding_model in progress_bar:
+        table = modeling.prepare_training_embedding_cache(
+            training_rows,
+            embedding_model,
+            device,
+            database_path,
+            progress,
+        )
+        row_counts[embedding_model['id']] = table.count_rows()
+
+    progress(f'Prepared complete embedding caches at {database_path}')
+    return row_counts
+
+
 def run_experiment(
         config: dict[str, Any],
         project_root: str | Path = '.',
@@ -283,7 +315,20 @@ def run_experiment(
     progress(f'Using device: {device}')
     progress(f'Holding out {target}; language model input is hard_text + {audit_column}')
 
-    source_splits = dataset.load_data(config, root)
+    source_rows = dataset.load_source_rows(config, root)
+    source_splits = dataset.select_profession_splits(config, source_rows)
+    complete_training_rows = [row for row in source_rows if row[dataset.Column.SPLIT] == 'train']
+    embedding_models = config['retrieval']['embedding_models']
+    database_path = root / config['retrieval']['lancedb_path']
+    cached_tables = {
+        embedding_model['id']: modeling.open_training_embedding_cache(
+            complete_training_rows,
+            embedding_model,
+            database_path,
+        )
+        for embedding_model in embedding_models
+    }
+
     source_dataset_counts = dataset.calculate_dataset_counts(config, source_splits)
     train, evaluation_rows, evaluation_per_cell = dataset.select_run_data(config, source_splits)
     if config['dataset']['evaluation_per_profession_gender'] == 'max_balanced':
@@ -301,14 +346,21 @@ def run_experiment(
         f'selected {len(train)} train and {len(evaluation_rows)} {evaluation_split} rows for this run'
     )
 
-    embedding_models = config['retrieval']['embedding_models']
+    training_filter = modeling.build_training_filter(train, dataset.train_size_limit(config))
+    for embedding_model_id, table in cached_tables.items():
+        filtered_row_count = table.count_rows(training_filter)
+        if filtered_row_count != len(train):
+            raise RuntimeError(
+                f'{embedding_model_id} training filter selected {filtered_row_count} cached rows; '
+                f'expected the configured training pool size {len(train)}'
+            )
+
     semantic_resources = _prepare_semantic_resources(
-        train,
         evaluation_rows,
         embedding_models,
+        cached_tables,
+        training_filter,
         device,
-        root / config['retrieval']['lancedb_path'],
-        progress,
     )
 
     retrieval_methods = config['retrieval']['methods']
@@ -413,7 +465,7 @@ def run_experiment(
             )
         finally:
             del tokenizer, language_model
-            modeling.clear_language_model_memory(device)
+            modeling.clear_model_memory(device)
 
     results = pd.concat(ranked_result_tables, ignore_index=True)
 

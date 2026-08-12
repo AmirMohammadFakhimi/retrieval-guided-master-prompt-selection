@@ -30,9 +30,12 @@ dataset:
   # Non-empty Hugging Face dataset ID used only when the cache is missing.
   hub_id: LabHC/bias_in_bios
 
+  # Non-empty pinned Hugging Face dataset revision used with hub_id.
+  revision: 052f01de644dba841176e0449528b41f27d94a61
+
   # Exact form: all, or a non-empty unique YAML list containing at least two of
   # the 28 profession names defined in dataset.PROFESSIONS.
-  professions: all
+  professions: [professor, physician, attorney, journalist]
 
   # Non-negative integer. Shuffles each source split before it is cached.
   shuffle_seed: 42
@@ -55,37 +58,44 @@ retrieval:
   example_counts: [2, 4]
 
   # Non-empty unique list. Exact values: as_retrieved | reverse | shuffle.
-  example_orders: [as_retrieved]
+  example_orders: [as_retrieved, reverse, shuffle]
 
-  # Non-empty list with unique id values. Each entry requires the six fields
+  # Complete tables are built only by the explicit preparation action.
+  # A normal experiment fails with guidance when a table is missing or incomplete.
+
+  # Non-empty list with unique id values. Each entry requires the seven fields
   # documented below and creates another set of retrieval conditions.
   embedding_models:
-    - # id: non-empty Hugging Face model ID.
-      id: Qwen/Qwen3-Embedding-8B
-      # dimension: positive integer equal to the encoder output width.
-      dimension: 4096
-      # max_sequence_length: positive integer no greater than the model's native
-      # context. Inputs beyond this configured limit fail instead of truncating.
-      max_sequence_length: 1024
-      # batch_size: positive integer chosen for available accelerator memory.
-      batch_size: 16
-      # Exact values: float32 | float16 | bfloat16.
-      dtype: bfloat16
-      # Non-empty string applied to evaluation queries only; train rows stay raw.
-      query_prompt: |-
-        Instruct: Given a biography, retrieve biographies with similar semantic content.
-        Query:
+#    - # id: non-empty Hugging Face model ID.
+#      id: Qwen/Qwen3-Embedding-8B
+#      # revision: non-empty pinned Hugging Face revision.
+#      revision: 1d8ad4ca9b3dd8059ad90a75d4983776a23d44af
+#      # dimension: positive integer equal to the encoder output width.
+#      dimension: 4096
+#      # max_sequence_length: positive integer no greater than the model's native
+#      # context. Inputs beyond this configured limit fail instead of truncating.
+#      max_sequence_length: 1024
+#      # batch_size: explicit positive performance setting used for preparation
+#      # and queries. It is never auto-tuned and does not invalidate the cache.
+#      batch_size: 4
+#      # Exact values: float32 | float16 | bfloat16.
+#      dtype: bfloat16
+#      # Non-empty string applied to evaluation queries only; train rows stay raw.
+#      query_prompt: |-
+#        Instruct: Given a biography, retrieve biographies with similar semantic content.
+#        Query:
 
     - # Same required shape and contracts as the entry above.
       id: BAAI/bge-large-en-v1.5
+      revision: d4aa6901d3a41ba39fb536a557fa166f842b0e09
       dimension: 1024
       max_sequence_length: 512
-      batch_size: 64
+      batch_size: 8
       dtype: float32
       query_prompt: "Represent this sentence for searching relevant passages: "
 
-  # Non-empty path string. Each embedding-model ID owns one reusable table.
-  # Delete this directory before changing source rows or embedding settings.
+  # Non-empty path string. Each embedding-model ID owns one complete reusable
+  # table; preparation replaces it when its row count is incomplete.
   lancedb_path: data/lancedb
 
 # Non-empty mapping of unique non-empty names to non-empty template strings.

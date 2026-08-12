@@ -1,6 +1,5 @@
 import gc
 import random
-import shlex
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -42,6 +41,7 @@ class SemanticResource(TypedDict):
 
     table: LanceTable
     evaluation_vectors: np.ndarray
+    training_filter: str
 
 
 def _validate_embedding_input_lengths(
@@ -105,44 +105,23 @@ def choose_device(requested: str = 'auto') -> str:
     return requested
 
 
-def prepare_semantic_retrieval(
-        train: list[dict[str, Any]],
-        queries: list[dict[str, Any]],
-        embedding_model: dict[str, Any],
-        device: str,
-        database_path: Path,
-        progress: Callable[[str], None] = print,
-) -> tuple[LanceTable, np.ndarray]:
-    """Open or build the persistent LanceDB training table and encode queries."""
+def _embedding_table_name(embedding_model_id: str) -> str:
+    """Return the stable LanceDB table name for an embedding model."""
+
+    return f'semantic_{embedding_model_id.lower().replace("/", "_")}'
+
+
+def _load_embedding_encoder(embedding_model: dict[str, Any], device: str) -> SentenceTransformer:
+    """Load one pinned embedding model and apply its configured sequence limit."""
 
     embedding_model_id = embedding_model['id']
     embedding_dimension = embedding_model['dimension']
     max_sequence_length = embedding_model['max_sequence_length']
-    batch_size = embedding_model['batch_size']
     dtype_name = embedding_model['dtype']
-    query_prompt = embedding_model['query_prompt']
-
-    database = lancedb.connect(database_path)
-    table_name = f'semantic_{embedding_model_id.lower().replace("/", "_")}'
-
-    if table_name in database.list_tables().tables:
-        table = database.open_table(table_name)
-        if table.count_rows() != len(train):
-            raise RuntimeError(
-                f'LanceDB table {table_name} does not match the configured '
-                'training pool. Delete the LanceDB directory and rerun from '
-                'the beginning:\n'
-                f'rm -rf -- {shlex.quote(str(database_path))}'
-            )
-        progress(
-            f'Reusing {len(train)} cached training embeddings from '
-            f'{database_path / table_name}'
-        )
-    else:
-        table = None
 
     encoder = SentenceTransformer(
         embedding_model_id,
+        revision=embedding_model['revision'],
         device=device,
         model_kwargs={'dtype': TORCH_DTYPES[dtype_name]},
         truncate_dim=embedding_dimension,
@@ -154,18 +133,65 @@ def prepare_semantic_retrieval(
             f'but max_sequence_length={max_sequence_length} was configured'
         )
     encoder.max_seq_length = max_sequence_length
+    return encoder
 
-    if table is None:
-        progress(f'Building LanceDB table {table_name} with {len(train)} training embeddings')
-        progress_bar = tqdm(
-            total=len(train),
-            desc='Embedding training rows for LanceDB',
-            unit='row',
-        )
 
+def clear_model_memory(device: str) -> None:
+    """Collect released model objects and clear the active accelerator cache."""
+
+    gc.collect()
+    if device == 'cuda':
+        torch.cuda.empty_cache()
+    elif device == 'mps':
+        torch.mps.empty_cache()
+
+
+def prepare_training_embedding_cache(
+        training_rows: list[dict[str, Any]],
+        embedding_model: dict[str, Any],
+        device: str,
+        database_path: Path,
+        progress: Callable[[str], None] = print,
+) -> LanceTable:
+    """Explicitly build or reuse all training embeddings for one model."""
+
+    if not training_rows:
+        raise ValueError('Cannot prepare an embedding cache from an empty training corpus')
+
+    embedding_model_id = embedding_model['id']
+    embedding_dimension = embedding_model['dimension']
+    max_sequence_length = embedding_model['max_sequence_length']
+    batch_size = embedding_model['batch_size']
+    table_name = _embedding_table_name(embedding_model_id)
+
+    database_path.mkdir(parents=True, exist_ok=True)
+    database = lancedb.connect(database_path)
+    if table_name in database.list_tables().tables:
+        table = database.open_table(table_name)
+        cached_row_count = table.count_rows()
+
+        if cached_row_count == len(training_rows):
+            progress(f'Reusing {cached_row_count} complete training embeddings from {database_path / table_name}')
+            return cast(LanceTable, table)
+
+        progress(f'Replacing incomplete LanceDB table {table_name}: {cached_row_count} of {len(training_rows)} rows')
+        database.drop_table(table_name)
+
+    canonical_training_rows = training_rows.copy()
+    progress(f'Embedding all {len(canonical_training_rows)} training rows for {embedding_model_id}')
+    encoder = _load_embedding_encoder(embedding_model, device)
+    progress_bar = tqdm(
+        total=len(canonical_training_rows),
+        desc='Embedding all training rows for LanceDB',
+        unit='row',
+        leave=True,
+    )
+    table: LanceTable | None = None
+
+    try:
         try:
-            for start in range(0, len(train), LANCEDB_INGEST_BATCH_SIZE):
-                batch = train[start:start + LANCEDB_INGEST_BATCH_SIZE]
+            for start in range(0, len(canonical_training_rows), LANCEDB_INGEST_BATCH_SIZE):
+                batch = canonical_training_rows[start:start + LANCEDB_INGEST_BATCH_SIZE]
                 _validate_embedding_input_lengths(
                     encoder,
                     batch,
@@ -173,6 +199,8 @@ def prepare_semantic_retrieval(
                     max_sequence_length,
                     'training-document',
                 )
+                # SentenceTransformer length-sorts this input internally and
+                # restores its returned vectors to the input order.
                 vectors = np.asarray(
                     encoder.encode(
                         [row[Column.HARD_TEXT] for row in batch],
@@ -196,46 +224,102 @@ def prepare_semantic_retrieval(
                         Column.HARD_TEXT: row[Column.HARD_TEXT],
                         Column.PROFESSION: row[Column.PROFESSION],
                         Column.GENDER: row[Column.GENDER],
+                        Column.TRAIN_ORDER: row[Column.TRAIN_ORDER],
                         'vector': vector.tolist(),
                     }
                     for row, vector in zip(batch, vectors, strict=True)
                 ]
 
                 if table is None:
-                    table = database.create_table(table_name, data=records)
+                    table = cast(LanceTable, database.create_table(table_name, data=records))
                 else:
-                    cast(LanceTable, table).add(records)
+                    table.add(records)
 
                 progress_bar.update(len(batch))
-            progress_bar.close()
-
-        except Exception:
-            progress_bar.close()
+        except BaseException:
             if table_name in database.list_tables().tables:
                 database.drop_table(table_name)
             raise
+        finally:
+            progress_bar.close()
+    finally:
+        del encoder
+        clear_model_memory(device)
 
     if table is None:
-        raise RuntimeError('Cannot build a LanceDB table from an empty training pool')
+        raise RuntimeError('Cannot build a LanceDB table from an empty training corpus')
+    return table
 
-    _validate_embedding_input_lengths(
-        encoder,
-        queries,
-        embedding_model_id,
-        max_sequence_length,
-        'query',
-        query_prompt,
-    )
-    query_vectors = np.asarray(
-        encoder.encode(
-            [row[Column.HARD_TEXT] for row in queries],
-            prompt=query_prompt,
-            batch_size=batch_size,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=True,
+
+def open_training_embedding_cache(
+        training_rows: list[dict[str, Any]],
+        embedding_model: dict[str, Any],
+        database_path: Path,
+) -> LanceTable:
+    """Open a table only when it contains every canonical training row."""
+
+    if not database_path.exists():
+        raise RuntimeError(
+            f'Embedding cache for {embedding_model["id"]} is missing. '
+            f'Run "Prepare all training embeddings" before the experiment.'
         )
-    )
+
+    database = lancedb.connect(database_path)
+    table_name = _embedding_table_name(embedding_model['id'])
+    if table_name not in database.list_tables().tables:
+        raise RuntimeError(
+            f'Embedding cache for {embedding_model["id"]} is missing. '
+            f'Run "Prepare all training embeddings" before the experiment.'
+        )
+
+    table = database.open_table(table_name)
+    cached_row_count = table.count_rows()
+    if cached_row_count != len(training_rows):
+        raise RuntimeError(
+            f'Embedding cache for {embedding_model["id"]} contains '
+            f'{cached_row_count} of {len(training_rows)} training rows. '
+            f'Run "Prepare all training embeddings" before the experiment.'
+        )
+
+    return cast(LanceTable, table)
+
+
+def encode_embedding_queries(
+        queries: list[dict[str, Any]],
+        embedding_model: dict[str, Any],
+        device: str,
+) -> np.ndarray:
+    """Encode only the selected evaluation queries for one cached model."""
+
+    embedding_model_id = embedding_model['id']
+    embedding_dimension = embedding_model['dimension']
+    max_sequence_length = embedding_model['max_sequence_length']
+    batch_size = embedding_model['batch_size']
+    query_prompt = embedding_model['query_prompt']
+    encoder = _load_embedding_encoder(embedding_model, device)
+
+    try:
+        _validate_embedding_input_lengths(
+            encoder,
+            queries,
+            embedding_model_id,
+            max_sequence_length,
+            'query',
+            query_prompt,
+        )
+        query_vectors = np.asarray(
+            encoder.encode(
+                [row[Column.HARD_TEXT] for row in queries],
+                prompt=query_prompt,
+                batch_size=batch_size,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+                show_progress_bar=True,
+            )
+        )
+    finally:
+        del encoder
+        clear_model_memory(device)
 
     if query_vectors.ndim != 2 or query_vectors.shape != (len(queries), embedding_dimension):
         raise RuntimeError(
@@ -243,20 +327,30 @@ def prepare_semantic_retrieval(
             f'{query_vectors.shape}; expected '
             f'({len(queries)}, {embedding_dimension})'
         )
+    return query_vectors
 
-    del encoder
-    gc.collect()
-    if device == 'cuda':
-        torch.cuda.empty_cache()
-    elif device == 'mps' and torch.backends.mps.is_available():
-        torch.mps.empty_cache()
 
-    return cast(LanceTable, table), query_vectors
+def build_training_filter(train: list[dict[str, Any]], train_size: int | None) -> str:
+    """Describe the configured retrieval pool inside the complete master table."""
+
+    if not train:
+        raise ValueError('Cannot build a training filter from an empty pool')
+
+    professions = sorted({str(row[Column.PROFESSION]) for row in train})
+    quoted_professions = ', '.join(f"'{profession}'" for profession in professions)
+    training_filter = f'{Column.PROFESSION.value} IN ({quoted_professions})'
+
+    if train_size is not None:
+        cutoff = max(int(row[Column.TRAIN_ORDER]) for row in train)
+        training_filter += f' AND {Column.TRAIN_ORDER.value} <= {cutoff}'
+
+    return training_filter
 
 
 def _get_semantic_candidate_page(
         semantic_table: LanceTable,
         query_vector: np.ndarray,
+        training_filter: str,
         limit: int,
         offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -266,6 +360,7 @@ def _get_semantic_candidate_page(
         semantic_table.search(query_vector)
         .distance_type('cosine')
         .bypass_vector_index()
+        .where(training_filter, prefilter=True)
         .select([
             Column.ID,
             Column.SPLIT,
@@ -290,6 +385,7 @@ def _get_semantic_candidate_page(
 def _get_balanced_semantic_candidates(
         semantic_table: LanceTable,
         query_vector: np.ndarray,
+        training_filter: str,
         example_count: int,
         profession_gender_pairs: tuple[tuple[str, str], ...],
 ) -> list[dict[str, Any]]:
@@ -308,7 +404,7 @@ def _get_balanced_semantic_candidates(
     unselected_candidates: list[dict[str, Any]] = []
     selected: list[dict[str, Any]] = []
 
-    row_count = semantic_table.count_rows()
+    row_count = semantic_table.count_rows(training_filter)
     offset = 0
     page_size = max(32, 8 * example_count)
 
@@ -335,6 +431,7 @@ def _get_balanced_semantic_candidates(
             page = _get_semantic_candidate_page(
                 semantic_table,
                 query_vector,
+                training_filter,
                 limit=min(page_size, row_count - offset),
                 offset=offset,
             )
@@ -367,6 +464,7 @@ def retrieve_examples(
         retrieval_method: str,
         query_vector: np.ndarray,
         semantic_table: LanceTable,
+        training_filter: str,
         example_count: int,
         training_profession_gender_pairs: tuple[tuple[str, str], ...],
 ) -> list[dict[str, Any]]:
@@ -375,18 +473,23 @@ def retrieve_examples(
     if retrieval_method not in RETRIEVAL_METHODS:
         raise ValueError(f'Unknown retrieval method {retrieval_method!r}; expected one of {sorted(RETRIEVAL_METHODS)}')
 
-    row_count = semantic_table.count_rows()
+    row_count = semantic_table.count_rows(training_filter)
     if example_count > row_count:
         raise ValueError(f'Cannot retrieve {example_count} examples from {row_count} training rows')
 
     if retrieval_method == 'semantic':
-        candidates = _get_semantic_candidate_page(semantic_table, query_vector, example_count)
+        candidates = _get_semantic_candidate_page(semantic_table, query_vector, training_filter, example_count)
+
         if len(candidates) != example_count:
             raise RuntimeError(f'LanceDB returned {len(candidates)} candidates; expected {example_count}')
         return candidates
 
     return _get_balanced_semantic_candidates(
-        semantic_table, query_vector, example_count, training_profession_gender_pairs
+        semantic_table,
+        query_vector,
+        training_filter,
+        example_count,
+        training_profession_gender_pairs,
     )
 
 
@@ -432,7 +535,7 @@ def build_prompt(
 ) -> list[dict[str, str]]:
     """Build a structured chat with demonstrations and a target-free query."""
 
-    # Rows must contain decoded target-label names from load_data, not raw numeric IDs.
+    # Rows contain decoded target-label names, not raw numeric IDs.
     audit_column = TARGET_TO_AUDIT_COLUMN[target]
     target_name = display_column_name(target)
     audit_column_name = display_column_name(audit_column)
@@ -486,16 +589,6 @@ def load_language_model(
     language_model.eval()
 
     return tokenizer, language_model
-
-
-def clear_language_model_memory(device: str) -> None:
-    """Collect released language model objects and clear the active accelerator cache."""
-
-    gc.collect()
-    if device == 'cuda':
-        torch.cuda.empty_cache()
-    elif device == 'mps':
-        torch.mps.empty_cache()
 
 
 def _apply_chat_template(messages: list[dict[str, str]], tokenizer: PreTrainedTokenizerBase) -> torch.Tensor:

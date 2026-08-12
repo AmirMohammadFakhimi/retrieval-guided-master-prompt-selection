@@ -51,6 +51,7 @@ class Column(StrEnum):
     HARD_TEXT = 'hard_text'
     PROFESSION = 'profession'
     GENDER = 'gender'
+    TRAIN_ORDER = 'train_order'
 
 
 TARGET_TO_AUDIT_COLUMN = {
@@ -176,7 +177,11 @@ def _download_data(config: dict[str, Any], destination: Path) -> list[dict[str, 
     rows: list[dict[str, Any]] = []
 
     for split_name in ('train', 'dev', 'test'):
-        split_data = load_dataset(dataset_config['hub_id'], split=split_name).shuffle(seed=shuffle_seed)
+        split_data = load_dataset(
+            dataset_config['hub_id'],
+            revision=dataset_config['revision'],
+            split=split_name,
+        ).shuffle(seed=shuffle_seed)
 
         if len(split_data) == 0:
             raise ValueError(f'Bias in Bios {split_name} split is empty')
@@ -193,8 +198,8 @@ def _download_data(config: dict[str, Any], destination: Path) -> list[dict[str, 
     return rows
 
 
-def load_data(config: dict[str, Any], project_root: Path) -> dict[str, list[dict[str, Any]]]:
-    """Load and normalize all profession-filtered source splits."""
+def load_source_rows(config: dict[str, Any], project_root: Path) -> list[dict[str, Any]]:
+    """Load every normalized source row and mark the canonical training order."""
 
     dataset_config = config['dataset']
     dataset_path = project_root / dataset_config['file']
@@ -203,17 +208,36 @@ def load_data(config: dict[str, Any], project_root: Path) -> dict[str, list[dict
     else:
         rows = _read_jsonl(dataset_path)
 
+    train_order = 0
+    positioned_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if row[Column.SPLIT] == 'train':
+            positioned_rows.append({**row, Column.TRAIN_ORDER: train_order})
+            train_order += 1
+        else:
+            positioned_rows.append(row)
+
+    return positioned_rows
+
+
+def select_profession_splits(
+        config: dict[str, Any],
+        source_rows: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Filter source rows to configured professions and canonical split names."""
+
     _, _, professions, _ = task_settings(config)
-    rows = [row for row in rows if row[Column.PROFESSION] in professions]
+    rows = [row for row in source_rows if row[Column.PROFESSION] in professions]
 
     split_rows = {
         'train': [{**row, Column.SPLIT: 'train'} for row in rows if row[Column.SPLIT] == 'train'],
         'validation': [{**row, Column.SPLIT: 'validation'} for row in rows if row[Column.SPLIT] == 'dev'],
         'test': [{**row, Column.SPLIT: 'test'} for row in rows if row[Column.SPLIT] == 'test'],
     }
+
     empty_splits = [name for name, split in split_rows.items() if not split]
     if empty_splits:
-        raise ValueError(f'Dataset {dataset_config["hub_id"]} has no matching rows in canonical splits: {empty_splits}')
+        raise ValueError(f'Dataset {config["dataset"]["hub_id"]} has no matching rows in canonical splits: {empty_splits}')
 
     return split_rows
 

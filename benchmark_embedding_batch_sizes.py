@@ -34,16 +34,20 @@ def main() -> None:
         steps = STEPS_BY_MODEL[model_id]
         encoder = modeling._load_embedding_encoder(embedding_model, device)
 
-        # Do not count one-time model initialization in the first measurement.
-        encoder.encode(length_sorted_training_texts[:2], batch_size=2, show_progress_bar=False)
-
         for batch_size in BATCH_SIZES:
             try:
+                # Warm up this batch shape before measuring it.
+                encoder.encode(
+                    length_sorted_training_texts[:batch_size],
+                    batch_size=batch_size,
+                    normalize_embeddings=True,
+                    convert_to_numpy=True,
+                    show_progress_bar=False,
+                )
+
                 for step in range(1, steps + 1):
                     start = (step - 1) * modeling.LANCEDB_INGEST_BATCH_SIZE
-                    texts = length_sorted_training_texts[
-                        start:start + modeling.LANCEDB_INGEST_BATCH_SIZE
-                    ]
+                    texts = length_sorted_training_texts[start:start + modeling.LANCEDB_INGEST_BATCH_SIZE]
 
                     started = perf_counter()
                     encoder.encode(

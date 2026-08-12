@@ -112,6 +112,8 @@ each batch size, and stores every step in
 `results/embedding_batch_size_benchmark.csv`.
 Training texts are globally sorted from longest to shortest before the timed
 chunks are selected, so the benchmark deliberately measures the longest rows.
+Each batch size receives one untimed internal batch as a warm-up before its
+measurements begin.
 
 For the study, run once with `defaults.target: profession` and once with
 `defaults.target: gender`, changing no other experimental controls.

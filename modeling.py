@@ -207,7 +207,7 @@ def prepare_training_embedding_cache(
                         batch_size=batch_size,
                         normalize_embeddings=True,
                         convert_to_numpy=True,
-                        show_progress_bar=False,
+                        show_progress_bar=True,
                     )
                 )
 

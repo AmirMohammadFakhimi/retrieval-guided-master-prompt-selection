@@ -99,6 +99,17 @@ tables, previews the language-model message format, runs the pipeline, and then
 walks through rankings, winners, detailed metrics, plots, prompts, and bounded
 prediction previews.
 
+To benchmark the step-7 embedding batch size separately, run:
+
+```bash
+python benchmark_embedding_batch_sizes.py
+```
+
+It tests batch sizes 2 through 256 by powers of two. Qwen uses two 2,048-row
+steps and BGE uses five. It times only embedding, prints the average speed for
+each batch size, and stores every step in
+`results/embedding_batch_size_benchmark.csv`.
+
 For the study, run once with `defaults.target: profession` and once with
 `defaults.target: gender`, changing no other experimental controls.
 

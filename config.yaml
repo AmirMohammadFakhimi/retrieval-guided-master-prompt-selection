@@ -41,6 +41,8 @@ dataset:
   shuffle_seed: 42
 
   # Exact form: all, or a positive integer retrieval-pool cap after filtering.
+  # Recommended: all, so retrieval uses every eligible training row without
+  # introducing an arbitrary pool-size control.
   train_size: all
 
   # Exact form: a positive integer, or max_balanced to use the smallest
@@ -66,31 +68,31 @@ retrieval:
   # Non-empty list with unique id values. Each entry requires the seven fields
   # documented below and creates another set of retrieval conditions.
   embedding_models:
-#    - # id: non-empty Hugging Face model ID.
-#      id: Qwen/Qwen3-Embedding-8B
-#      # revision: non-empty pinned Hugging Face revision.
-#      revision: 1d8ad4ca9b3dd8059ad90a75d4983776a23d44af
-#      # dimension: positive integer equal to the encoder output width.
-#      dimension: 4096
-#      # max_sequence_length: positive integer no greater than the model's native
-#      # context. Inputs beyond this configured limit fail instead of truncating.
-#      max_sequence_length: 1024
-#      # batch_size: explicit positive performance setting used for preparation
-#      # and queries. It is never auto-tuned and does not invalidate the cache.
-#      batch_size: 4
-#      # Exact values: float32 | float16 | bfloat16.
-#      dtype: bfloat16
-#      # Non-empty string applied to evaluation queries only; train rows stay raw.
-#      query_prompt: |-
-#        Instruct: Given a biography, retrieve biographies with similar semantic content.
-#        Query:
+    - # id: non-empty Hugging Face model ID.
+      id: Qwen/Qwen3-Embedding-8B
+      # revision: non-empty pinned Hugging Face revision.
+      revision: 1d8ad4ca9b3dd8059ad90a75d4983776a23d44af
+      # dimension: positive integer equal to the encoder output width.
+      dimension: 4096
+      # max_sequence_length: positive integer no greater than the model's native
+      # context. Inputs beyond this configured limit fail instead of truncating.
+      max_sequence_length: 1024
+      # batch_size: explicit positive performance setting used for preparation
+      # and queries. It is never auto-tuned and does not invalidate the cache.
+      batch_size: 4
+      # Exact values: float32 | float16 | bfloat16.
+      dtype: bfloat16
+      # Non-empty string applied to evaluation queries only; train rows stay raw.
+      query_prompt: |-
+        Instruct: Given a biography, retrieve biographies with similar semantic content.
+        Query:
 
     - # Same required shape and contracts as the entry above.
       id: BAAI/bge-large-en-v1.5
       revision: d4aa6901d3a41ba39fb536a557fa166f842b0e09
       dimension: 1024
       max_sequence_length: 512
-      batch_size: 8
+      batch_size: 32
       dtype: float32
       query_prompt: "Represent this sentence for searching relevant passages: "
 

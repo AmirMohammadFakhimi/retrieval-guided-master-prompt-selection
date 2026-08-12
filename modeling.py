@@ -177,11 +177,15 @@ def prepare_training_embedding_cache(
         progress(f'Replacing incomplete LanceDB table {table_name}: {cached_row_count} of {len(training_rows)} rows')
         database.drop_table(table_name)
 
-    canonical_training_rows = training_rows.copy()
-    progress(f'Embedding all {len(canonical_training_rows)} training rows for {embedding_model_id}')
+    length_sorted_training_rows = sorted(
+        training_rows,
+        key=lambda row: len(row[Column.HARD_TEXT]),
+        reverse=True,
+    )
+    progress(f'Embedding all {len(length_sorted_training_rows)} training rows for {embedding_model_id}')
     encoder = _load_embedding_encoder(embedding_model, device)
     progress_bar = tqdm(
-        total=len(canonical_training_rows),
+        total=len(length_sorted_training_rows),
         desc='Embedding all training rows for LanceDB',
         unit='row',
         leave=True,
@@ -190,8 +194,8 @@ def prepare_training_embedding_cache(
 
     try:
         try:
-            for start in range(0, len(canonical_training_rows), LANCEDB_INGEST_BATCH_SIZE):
-                batch = canonical_training_rows[start:start + LANCEDB_INGEST_BATCH_SIZE]
+            for start in range(0, len(length_sorted_training_rows), LANCEDB_INGEST_BATCH_SIZE):
+                batch = length_sorted_training_rows[start:start + LANCEDB_INGEST_BATCH_SIZE]
                 _validate_embedding_input_lengths(
                     encoder,
                     batch,
@@ -199,8 +203,8 @@ def prepare_training_embedding_cache(
                     max_sequence_length,
                     'training-document',
                 )
-                # SentenceTransformer length-sorts this input internally and
-                # restores its returned vectors to the input order.
+                # SentenceTransformer re-sorts this bounded input internally
+                # and restores its returned vectors to the batch's input order.
                 vectors = np.asarray(
                     encoder.encode(
                         [row[Column.HARD_TEXT] for row in batch],

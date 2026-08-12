@@ -54,10 +54,11 @@ data-loading boundary, not permission to evaluate every split.
 
 `prepare_embedding_cache(config, root)` is the explicit one-time preparation
 step. It embeds every canonical source-training row for each configured,
-revision-pinned embedding model. SentenceTransformer length-sorts each bounded
-input chunk internally and returns vectors in input order, so LanceDB retains
-canonical training order. Its tables are independent of `dataset.professions`
-and `dataset.train_size`.
+revision-pinned embedding model. Training rows are stably sorted from longest
+to shortest before they are divided into bounded input chunks. LanceDB stores
+that length order while each row's `train_order` retains its canonical source
+position. Its tables are independent of `dataset.professions` and
+`dataset.train_size`.
 
 `select_run_data(config, split_rows)` applies `dataset.train_size`, verifies
 that every retrieval example count fits the selected train pool, and returns
@@ -109,6 +110,8 @@ It tests batch sizes 2 through 256 by powers of two. Qwen uses two 2,048-row
 steps and BGE uses five. It times only embedding, prints the average speed for
 each batch size, and stores every step in
 `results/embedding_batch_size_benchmark.csv`.
+Training texts are globally sorted from longest to shortest before the timed
+chunks are selected, so the benchmark deliberately measures the longest rows.
 
 For the study, run once with `defaults.target: profession` and once with
 `defaults.target: gender`, changing no other experimental controls.

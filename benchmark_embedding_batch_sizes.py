@@ -8,7 +8,7 @@ import dataset
 import modeling
 
 
-BATCH_SIZES = (2, 4, 8, 16, 32, 64, 128, 256)
+BATCH_SIZES = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 STEPS_BY_MODEL = {
     'Qwen/Qwen3-Embedding-8B': 2,
     'BAAI/bge-large-en-v1.5': 5,
@@ -21,11 +21,15 @@ def main() -> None:
     device = modeling.choose_device(config['inference']['device'])
 
     source_rows = dataset.load_source_rows(config, project_root)
-    training_texts = [
-        row[dataset.Column.HARD_TEXT]
-        for row in source_rows
-        if row[dataset.Column.SPLIT] == 'train'
-    ]
+    length_sorted_training_texts = sorted(
+        (
+            row[dataset.Column.HARD_TEXT]
+            for row in source_rows
+            if row[dataset.Column.SPLIT] == 'train'
+        ),
+        key=len,
+        reverse=True,
+    )
     measurements = []
 
     for embedding_model in config['retrieval']['embedding_models']:
@@ -34,13 +38,15 @@ def main() -> None:
         encoder = modeling._load_embedding_encoder(embedding_model, device)
 
         # Do not count one-time model initialization in the first measurement.
-        encoder.encode(training_texts[:2], batch_size=2, show_progress_bar=False)
+        encoder.encode(length_sorted_training_texts[:2], batch_size=2, show_progress_bar=False)
 
         for batch_size in BATCH_SIZES:
             try:
                 for step in range(1, steps + 1):
                     start = (step - 1) * modeling.LANCEDB_INGEST_BATCH_SIZE
-                    texts = training_texts[start : start + modeling.LANCEDB_INGEST_BATCH_SIZE]
+                    texts = length_sorted_training_texts[
+                        start:start + modeling.LANCEDB_INGEST_BATCH_SIZE
+                    ]
 
                     started = perf_counter()
                     encoder.encode(
@@ -48,7 +54,7 @@ def main() -> None:
                         batch_size=batch_size,
                         normalize_embeddings=True,
                         convert_to_numpy=True,
-                        show_progress_bar=True,
+                        show_progress_bar=False,
                     )
                     seconds = perf_counter() - started
                     rows_per_second = len(texts) / seconds

@@ -91,10 +91,7 @@ def main() -> None:
     summary = (
         measurements
         .groupby(['embedding_model', 'batch_size'], as_index=False)
-        .agg(
-            row_count=('row_count', 'sum'),
-            seconds=('seconds', 'sum'),
-        )
+        .agg(row_count=('row_count', 'sum'), seconds=('seconds', 'sum'))
     )
     summary['rows_per_second'] = summary['row_count'] / summary['seconds']
     summary_output_path = project_root / 'results' / 'embedding_batch_size_benchmark_summary.csv'

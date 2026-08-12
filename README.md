@@ -111,140 +111,223 @@ each model; the CSV metric tables retain every condition.
 
 ## Metric formulas
 
-Notation: $c$ is a target label evaluated one-vs-rest using both `true_label`
-and `predicted_label`; $g$ is an audit group from the separate audit column;
-$K$ is the number of target labels, $N$ is the total number of evaluated rows,
-$N_g$ is the size of audit group $g$, and $n_c$ is the true support of target
-label $c$. $D_m$ is the set of target labels where metric $m$ is defined.
-$TP$, $FP$, $FN$, and $TN$ are one-vs-rest confusion counts. A zero denominator
-produces `NaN`; a disparity requires at least two defined audit-group rates.
+### 1. Notation, counts, and supports
 
-For each target label:
+For one prediction condition, $N$ is `sample_count`, $K$ is `n_target_labels`,
+and $G$ is `n_audit_groups`. Row $i$ has true target label $y_i$, predicted
+target label $\hat y_i$, and audit group $a_i$. Target label $c$ is evaluated
+one-vs-rest: $c$ is positive and every other target label is negative. Audit
+group $g$ contains $N_g$ rows, stored as `audit_group_n`.
 
 $$
-Precision_c=PPV_c=\frac{TP_c}{TP_c+FP_c},\quad
-Recall_c=TPR_c=\frac{TP_c}{TP_c+FN_c},\quad
-F1_c=\frac{2TP_c}{2TP_c+FP_c+FN_c}
+\begin{aligned}
+TP_c&=\sum_i\mathbf{1}[y_i=c\land\hat y_i=c], &
+FP_c&=\sum_i\mathbf{1}[y_i\ne c\land\hat y_i=c],\\
+FN_c&=\sum_i\mathbf{1}[y_i=c\land\hat y_i\ne c], &
+TN_c&=\sum_i\mathbf{1}[y_i\ne c\land\hat y_i\ne c].
+\end{aligned}
 $$
 
-$$
-Specificity_c=TNR_c=\frac{TN_c}{TN_c+FP_c},\quad
-FPR_c=\frac{FP_c}{FP_c+TN_c},\quad
-FNR_c=\frac{FN_c}{FN_c+TP_c},\quad
-NPV_c=\frac{TN_c}{TN_c+FN_c}
-$$
+These four counts are stored as `tp`, `fp`, `fn`, and `tn`. The remaining
+detailed output columns are:
 
-Whenever the corresponding denominator is nonzero,
-$FPR_c=1-Specificity_c$ and $FNR_c=1-Recall_c$.
+- `positive_support`: $n_c=TP_c+FN_c$;
+- `negative_support`: $FP_c+TN_c=N-n_c$;
+- `predicted_positive`: $TP_c+FP_c$;
+- `selection_rate`: $SR_c=(TP_c+FP_c)/N$.
 
-The target-label and audit-group tables use the same one-vs-rest column names and
-order: positive support, negative support, predicted positives, confusion
-counts, selection rate, precision, recall, F1, specificity, FPR, FNR, and NPV.
-The audit-group table additionally identifies the audit group and reports its
-size and overall multiclass accuracy.
-
-For any target-label metric $m_c$, undefined values are omitted from its aggregate:
+The audit-group table applies exactly the same definitions after restricting
+the sums to $a_i=g$; its counts use the subscript $(c,g)$ and its selection-rate
+denominator is $N_g$. The long-form confusion-matrix output stores `count` as
 
 $$
-Accuracy=\frac{\sum_cTP_c}{N},\quad
-Macro(m)=\frac{1}{|D_m|}\sum_{c\in D_m}m_c,\quad
-Weighted(m)=\frac{\sum_{c\in D_m}n_cm_c}{\sum_{c\in D_m}n_c}
+C_{r,s}=\sum_i\mathbf{1}[y_i=r\land\hat y_i=s]
 $$
 
-When $m$ is defined for every target label, $|D_m|=K$.
+for every configured true-label row $r$ and predicted-label column $s$.
+
+### 2. Target-label and audit-group rates
+
+For each target label, and identically within each audit group:
+
+- `precision`: $PPV_c=TP_c/(TP_c+FP_c)$;
+- `recall`: $TPR_c=TP_c/(TP_c+FN_c)$;
+- `f1`: $F1_c=2TP_c/(2TP_c+FP_c+FN_c)$;
+- `specificity`: $TNR_c=TN_c/(TN_c+FP_c)$;
+- `false_positive_rate`: $FPR_c=FP_c/(FP_c+TN_c)$;
+- `false_negative_rate`: $FNR_c=FN_c/(FN_c+TP_c)$;
+- `negative_predictive_value`: $NPV_c=TN_c/(TN_c+FN_c)$.
+
+`audit_group_accuracy` is the multiclass accuracy repeated for each target-label
+row of the same audit group:
+
+$$
+Accuracy_g=\frac{\sum_{i:a_i=g}\mathbf{1}[y_i=\hat y_i]}{N_g}.
+$$
+
+Whenever their denominators are nonzero, $FPR=1-Specificity$ and
+$FNR=1-Recall$. Higher selection rate is not inherently better or worse;
+precision, recall, F1, specificity, NPV, and audit-group accuracy are better
+when higher, while FPR and FNR are better when lower.
+
+The implementation returns `NaN` for a rate whose required denominator is
+zero. Macro and weighted aggregates omit undefined rates; a coverage output
+reports how many values remained. Selection rate and audit-group accuracy are
+defined because validated conditions and observed audit groups are nonempty.
+
+### 3. Overall quality and agreement
+
+For any target-label rate $m_c$, let $D_m$ contain the target labels where it is
+defined, and let $D_m^+$ additionally require positive true support $n_c>0$:
+
+$$
+\begin{aligned}
+Accuracy&=\frac{\sum_cTP_c}{N},\\
+Macro(m)&=\frac{1}{|D_m|}\sum_{c\in D_m}m_c,\\
+Weighted(m)&=\frac{\sum_{c\in D_m^+}n_cm_c}
+{\sum_{c\in D_m^+}n_c}.
+\end{aligned}
+$$
+
+These formulas map to `macro_precision`, `macro_recall / balanced_accuracy`,
+`macro_f1`, `weighted_precision`, and `weighted_f1`. The defined-label coverage
+outputs are
+`n_precision_defined_target_labels` $=|D_{Precision}|$,
+`n_recall_defined_target_labels` $=|D_{Recall}|$, and
+`n_f1_defined_target_labels` $=|D_{F1}|$. An aggregate is `NaN` when its defined
+set is empty; a weighted aggregate also needs at least one positive weight.
 
 In this single-label multiclass task, let $T=\sum_cTP_c$ be the number of
 correct rows and $E=\sum_cFP_c=\sum_cFN_c$ the number of errors. Since
 $N=T+E$:
 
 $$
-MicroPrecision=\frac{T}{T+E}=MicroRecall=MicroF1=Accuracy
+MicroPrecision=MicroRecall=MicroF1=Accuracy=\frac{T}{N},
 $$
 
 $$
 WeightedRecall=\frac{1}{N}\sum_{c:n_c>0}n_c\frac{TP_c}{n_c}
-=\frac{\sum_cTP_c}{N}=Accuracy,\qquad
-BalancedAccuracy=\frac{1}{|D_R|}\sum_{c\in D_R}Recall_c=MacroRecall
+=Accuracy,\qquad
+BalancedAccuracy=\frac{1}{|D_{Recall}|}\sum_{c\in D_{Recall}}Recall_c
+=MacroRecall.
 $$
 
-$D_R$ is the set of target labels whose recall is defined. The results store these
-two equality families once, under the columns
+The results store those equality families once under
 `accuracy / micro_precision / micro_recall / micro_f1 / weighted_recall` and
-`macro_recall / balanced_accuracy`. Any individual standard name remains
-valid as `ranking_metric`.
+`macro_recall / balanced_accuracy`. Each individual standard name is still a
+valid `ranking_metric` alias.
 
-For multiclass MCC, $C$ is the confusion matrix,
-$s=\sum_{ij}C_{ij}$, $q=\operatorname{trace}(C)$,
-$p_k=\sum_iC_{ik}$ is the predicted total for target label $k$, and
-$t_k=\sum_jC_{kj}$ is its true total:
+For multiclass agreement, let $C$ be the confusion matrix,
+$s=\sum_{r,k}C_{r,k}=N$, $q=\operatorname{trace}(C)$,
+$p_k=\sum_rC_{r,k}$ be predicted totals, and $t_k=\sum_rC_{k,r}$ be true totals:
+
+The `matthews_correlation_coefficient` output is
 
 $$
 MCC=\frac{qs-\sum_kp_kt_k}
-{\sqrt{(s^2-\sum_kp_k^2)(s^2-\sum_kt_k^2)}}
+{\sqrt{(s^2-\sum_kp_k^2)(s^2-\sum_kt_k^2)}}.
 $$
 
-For Cohen's kappa, $p_o=Accuracy$ is observed agreement and
-$p_e=\sum_k(t_k/s)(p_k/s)$ is chance-expected agreement:
+With observed agreement $p_o=Accuracy$ and chance-expected agreement
+$p_e=\sum_k(t_k/s)(p_k/s)$:
+
+The `cohen_kappa` output is
 
 $$
-\kappa=\frac{p_o-p_e}{1-p_e}
+\kappa=\frac{p_o-p_e}{1-p_e}.
 $$
 
-Within audit group $g$:
+Higher accuracy, MCC, and kappa are better; one means perfect agreement. The
+implementation uses scikit-learn's degenerate-case conventions: MCC is `0.0`
+when its denominator is zero, while kappa is `NaN` when $1-p_e=0$.
+
+### 4. Target-label fairness across audit groups
+
+For target label $c$ and rate $m$, let $G_{m,c}$ contain the audit groups where
+$m_{c,g}$ is defined. A range ignores undefined values and exists only when at
+least two values remain:
 
 $$
-SR_{c,g}=\frac{TP_{c,g}+FP_{c,g}}{N_g},\quad
-TPR_{c,g}=\frac{TP_{c,g}}{TP_{c,g}+FN_{c,g}},\quad
-FPR_{c,g}=\frac{FP_{c,g}}{FP_{c,g}+TN_{c,g}}
+Range_g(m_{c,g})=\max_{g\in G_{m,c}}m_{c,g}
+-\min_{g\in G_{m,c}}m_{c,g}.
 $$
 
+The `fairness_metrics` columns are:
+
+- `demographic_parity_difference`: $DPDiff_c=Range_g(SR_{c,g})$;
+- `demographic_parity_ratio`:
+  $DPRatio_c=\min_{g\in G_{SR,c}}SR_{c,g}/\max_{g\in G_{SR,c}}SR_{c,g}$;
+- `equal_opportunity_difference`: $EODiff_c=Range_g(TPR_{c,g})$;
+- `false_positive_rate_difference`: $FPRDiff_c=Range_g(FPR_{c,g})$;
+- `equalized_odds_difference`: $EOddsDiff_c=\max(EODiff_c,FPRDiff_c)$;
+- `predictive_parity_difference`: $PPDiff_c=Range_g(PPV_{c,g})$.
+
+A difference of zero and a demographic-parity ratio of one mean equality across
+the compared audit groups. The ratio requires at least two defined selection
+rates and a positive maximum; if every group has zero selection rate, it is
+`NaN` rather than $0/0$. Equalized-odds difference is `NaN` unless both its TPR-
+and FPR-range components are defined.
+
+The per-target-label coverage outputs are:
+
+- `n_audit_groups_compared` $=G$;
+- `n_selection_rate_defined_audit_groups` $=|G_{SR,c}|$;
+- `n_recall_defined_audit_groups` $=|G_{TPR,c}|$;
+- `n_false_positive_rate_defined_audit_groups` $=|G_{FPR,c}|$;
+- `n_precision_defined_audit_groups` $=|G_{PPV,c}|$.
+
+### 5. Condition-level fairness summaries and coverage
+
+Audit-group accuracy is summarized as:
+
+- `worst_audit_group_accuracy`: $\min_gAccuracy_g$;
+- `audit_group_accuracy_difference`: $Range_g(Accuracy_g)$.
+
+The accuracy difference requires at least two audit groups. Higher worst-group
+accuracy and a lower accuracy difference are preferable.
+
+For each target-label fairness value $d_c$, let $D_d$ contain the target labels
+where it is defined. Every fairness family receives the same three summaries:
+
 $$
-PPV_{c,g}=\frac{TP_{c,g}}{TP_{c,g}+FP_{c,g}},\qquad
-Accuracy_g=\frac{\text{correct rows in }g}{N_g}
+Mean(d)=\frac{1}{|D_d|}\sum_{c\in D_d}d_c,\qquad
+Min(d)=\min_{c\in D_d}d_c,\qquad
+Max(d)=\max_{c\in D_d}d_c.
 $$
 
-Here $TPR_{c,g}=Recall_{c,g}$ and $PPV_{c,g}=Precision_{c,g}$. Within each
-audit group, $FPR_{c,g}=1-Specificity_{c,g}$ and
-$FNR_{c,g}=1-Recall_{c,g}$ whenever the corresponding denominator is nonzero.
+The exact result-column families are:
 
-Let $Range_g(x)=\max_gx_g-\min_gx_g$. The target-label fairness metrics are:
+| Per-target-label value $d$       | Condition result columns                                                                                          |
+|----------------------------------|-------------------------------------------------------------------------------------------------------------------|
+| `demographic_parity_difference`  | `mean_demographic_parity_difference`, `min_demographic_parity_difference`, `max_demographic_parity_difference`    |
+| `demographic_parity_ratio`       | `mean_demographic_parity_ratio`, `min_demographic_parity_ratio`, `max_demographic_parity_ratio`                   |
+| `equal_opportunity_difference`   | `mean_equal_opportunity_difference`, `min_equal_opportunity_difference`, `max_equal_opportunity_difference`       |
+| `false_positive_rate_difference` | `mean_false_positive_rate_difference`, `min_false_positive_rate_difference`, `max_false_positive_rate_difference` |
+| `equalized_odds_difference`      | `mean_equalized_odds_difference`, `min_equalized_odds_difference`, `max_equalized_odds_difference`                |
+| `predictive_parity_difference`   | `mean_predictive_parity_difference`, `min_predictive_parity_difference`, `max_predictive_parity_difference`       |
 
-$$
-DPDiff_c=Range_g(SR_{c,g}),\quad
-DPRatio_c=\frac{\min_gSR_{c,g}}{\max_gSR_{c,g}},\quad
-EqualOpportunityDiff_c=Range_g(TPR_{c,g})
-$$
+Each family omits undefined target-label values. If $D_d$ is empty, all three
+summaries are `NaN`. Its exact coverage output is:
 
-$$
-FPRDiff_c=Range_g(FPR_{c,g}),\quad
-EqualizedOddsDiff_c=\max(EqualOpportunityDiff_c,FPRDiff_c),\quad
-PredictiveParityDiff_c=Range_g(PPV_{c,g})
-$$
+- `n_demographic_parity_defined_target_labels` $=|D_{DPDiff}|$;
+- `n_demographic_parity_ratio_defined_target_labels` $=|D_{DPRatio}|$;
+- `n_equal_opportunity_defined_target_labels` $=|D_{EODiff}|$;
+- `n_false_positive_rate_defined_target_labels` $=|D_{FPRDiff}|$;
+- `n_equalized_odds_defined_target_labels` $=|D_{EOddsDiff}|$;
+- `n_predictive_parity_defined_target_labels` $=|D_{PPDiff}|$.
 
-Finally, $WorstAuditGroupAccuracy=\min_gAccuracy_g$ and
-$AuditGroupAccuracyDiff=Range_g(Accuracy_g)$. For target-label disparity $d_c$,
-let $D_d$ be the target labels where it is defined:
+For difference metrics, zero is best, so their minimum is the best target-label
+value and their maximum is the worst. For demographic-parity ratio, one is best,
+so the minimum ratio is the worst target-label value and the maximum is the best.
+Coverage plots show $K$ or $G$ first so every defined count has an explicit
+denominator.
 
-$$
-MinimumDifference(d)=\min_{c\in D_d}d_c,\quad
-MeanDifference(d)=\frac{1}{|D_d|}\sum_{c\in D_d}d_c,\quad
-MaximumDifference(d)=\max_{c\in D_d}d_c
-$$
-
-Demographic-parity ratio uses the same minimum, mean, and maximum aggregation,
-but because one is best, its minimum is the worst target-label value and its
-maximum is the best:
-
-$$
-MinimumDPRatio=\min_{c\in D_d}DPRatio_c,\quad
-MeanDPRatio=\frac{1}{|D_d|}\sum_{c\in D_d}DPRatio_c,\quad
-MaximumDPRatio=\max_{c\in D_d}DPRatio_c
-$$
-
-The corresponding defined-target-label count is $|D_d|$, reported alongside
-the total $K$. Per-target-label fairness coverage similarly reports each defined
-audit-group count alongside the total number of audit groups compared. Coverage
-plots show the total first so every defined count has an explicit denominator.
+Quality and fairness must be interpreted together. With `target: profession`
+and audit column `gender`, these are conventional protected-group fairness
+diagnostics. With `target: gender` and audit column `profession`, the same
+mathematics is better described as profession-conditioned performance or
+stereotype/association diagnostics. Profession and gender remain separate
+experiments with the same prompt candidates and separate winners.
 
 The checked-in configuration has two retrieval methods, two embedding models,
 two example counts, one example order, two master prompts, and four language models:

@@ -427,12 +427,7 @@ def run_experiment(
         'source_dataset_counts': source_dataset_counts,
         'run_dataset_counts': run_dataset_counts,
     }
-    output = _write_run_outputs(
-        root,
-        config,
-        result_tables,
-        target_labels,
-    )
+    output = _write_run_outputs(root, config, result_tables, target_labels)
 
     progress(f'Finished: {output['run_dir']}')
     return output

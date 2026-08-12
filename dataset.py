@@ -239,7 +239,9 @@ def select_run_data(
         )
     if not train:
         raise ValueError('The training demonstration pool is empty')
-    if max(config['retrieval']['example_counts']) > len(train):
+
+    example_counts: list[int] = config['retrieval']['example_counts']
+    if max(example_counts) > len(train):
         raise ValueError(
             f'Every retrieval.example_counts entry must be <= the available training pool size ({len(train)})'
         )

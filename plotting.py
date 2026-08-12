@@ -8,18 +8,12 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Patch
 
-from evaluation import (
-    ACCURACY_METRIC_COLUMN,
-    MACRO_RECALL_METRIC_COLUMN,
-)
+from evaluation import ACCURACY_METRIC_COLUMN, MACRO_RECALL_METRIC_COLUMN
 
 MetricSpec = tuple[str, str]
 
 QUALITY_METRICS: tuple[MetricSpec, ...] = (
-    (
-        ACCURACY_METRIC_COLUMN,
-        'Accuracy / micro precision / micro recall / micro F1 / weighted recall',
-    ),
+    (ACCURACY_METRIC_COLUMN, 'Accuracy / micro precision / micro recall / micro F1 / weighted recall'),
     ('macro_precision', 'Macro precision'),
     (MACRO_RECALL_METRIC_COLUMN, 'Macro recall / balanced accuracy'),
     ('macro_f1', 'Macro F1'),
@@ -44,10 +38,7 @@ MEAN_FAIRNESS_DIFFERENCES: tuple[MetricSpec, ...] = (
 MINIMUM_FAIRNESS_DIFFERENCES: tuple[MetricSpec, ...] = (
     ('min_demographic_parity_difference', 'Minimum demographic-parity difference'),
     ('min_equal_opportunity_difference', 'Minimum equal-opportunity difference'),
-    (
-        'min_false_positive_rate_difference',
-        'Minimum false-positive-rate difference',
-    ),
+    ('min_false_positive_rate_difference', 'Minimum false-positive-rate difference'),
     ('min_equalized_odds_difference', 'Minimum equalized-odds difference'),
     ('min_predictive_parity_difference', 'Minimum predictive-parity difference'),
 )
@@ -78,30 +69,12 @@ SUMMARY_COVERAGE_COLUMNS: tuple[MetricSpec, ...] = (
     ('n_precision_defined_target_labels', 'Target labels defining precision'),
     ('n_recall_defined_target_labels', 'Target labels defining recall'),
     ('n_f1_defined_target_labels', 'Target labels defining F1'),
-    (
-        'n_demographic_parity_defined_target_labels',
-        'Target labels defining demographic-parity difference',
-    ),
-    (
-        'n_demographic_parity_ratio_defined_target_labels',
-        'Target labels defining demographic-parity ratio',
-    ),
-    (
-        'n_equal_opportunity_defined_target_labels',
-        'Target labels defining equal-opportunity difference',
-    ),
-    (
-        'n_false_positive_rate_defined_target_labels',
-        'Target labels defining false-positive-rate difference',
-    ),
-    (
-        'n_equalized_odds_defined_target_labels',
-        'Target labels defining equalized-odds difference',
-    ),
-    (
-        'n_predictive_parity_defined_target_labels',
-        'Target labels defining predictive-parity difference',
-    ),
+    ('n_demographic_parity_defined_target_labels', 'Target labels defining demographic-parity difference'),
+    ('n_demographic_parity_ratio_defined_target_labels', 'Target labels defining demographic-parity ratio'),
+    ('n_equal_opportunity_defined_target_labels', 'Target labels defining equal-opportunity difference'),
+    ('n_false_positive_rate_defined_target_labels', 'Target labels defining false-positive-rate difference'),
+    ('n_equalized_odds_defined_target_labels', 'Target labels defining equalized-odds difference'),
+    ('n_predictive_parity_defined_target_labels', 'Target labels defining predictive-parity difference'),
 )
 
 TARGET_LABEL_RATE_COLUMNS: tuple[MetricSpec, ...] = (
@@ -141,22 +114,19 @@ FAIRNESS_COVERAGE_COLUMNS: tuple[MetricSpec, ...] = (
     ('n_audit_groups_compared', 'Total audit groups'),
     ('n_selection_rate_defined_audit_groups', 'Audit groups defining selection rate'),
     ('n_recall_defined_audit_groups', 'Audit groups defining recall'),
-    (
-        'n_false_positive_rate_defined_audit_groups',
-        'Audit groups defining false-positive rate',
-    ),
+    ('n_false_positive_rate_defined_audit_groups', 'Audit groups defining false-positive rate'),
     ('n_precision_defined_audit_groups', 'Audit groups defining precision'),
 )
 
 SUMMARY_METRICS = (
-    QUALITY_METRICS
-    + AGREEMENT_METRICS
-    + MEAN_FAIRNESS_DIFFERENCES
-    + MINIMUM_FAIRNESS_DIFFERENCES
-    + WORST_FAIRNESS_DIFFERENCES
-    + FAIRNESS_RATIOS
-    + SUMMARY_SIZE_COLUMNS
-    + SUMMARY_COVERAGE_COLUMNS
+        QUALITY_METRICS
+        + AGREEMENT_METRICS
+        + MEAN_FAIRNESS_DIFFERENCES
+        + MINIMUM_FAIRNESS_DIFFERENCES
+        + WORST_FAIRNESS_DIFFERENCES
+        + FAIRNESS_RATIOS
+        + SUMMARY_SIZE_COLUMNS
+        + SUMMARY_COVERAGE_COLUMNS
 )
 
 
@@ -172,17 +142,13 @@ def _validate_numeric_coverage(
 ) -> None:
     numeric_columns = set(table.select_dtypes(include='number').columns)
     uncovered = sorted(numeric_columns - plotted_columns - excluded_columns)
+
     if uncovered:
-        raise ValueError(
-            f'Numeric columns in {table_name} have no corresponding plot: {uncovered}'
-        )
+        raise ValueError(f'Numeric columns in {table_name} have no corresponding plot: {uncovered}')
 
 
 def _context_title(table: pd.DataFrame) -> str:
-    return (
-        f'target={table['target'].iloc[0]}, '
-        f'audit groups={table['audit_column'].iloc[0]}'
-    )
+    return (f'target={table['target'].iloc[0]}, audit groups={table['audit_column'].iloc[0]}')
 
 
 def _condition_labels(results: pd.DataFrame) -> list[str]:
@@ -207,10 +173,7 @@ def _target_label_audit_group_labels(
         audit_group_metrics: pd.DataFrame,
 ) -> list[str]:
     return [
-        (
-            f'{row.language_model} | target label={row.target_label} | '
-            f'audit group={row.audit_group}'
-        )
+        f'{row.language_model} | target label={row.target_label} | audit group={row.audit_group}'
         for row in audit_group_metrics.itertuples(index=False)
     ]
 
@@ -260,12 +223,8 @@ def _plot_metric_panels(
     else:
         colors = np.where(is_best.to_numpy(dtype=bool), '#1565C0', '#90CAF9')
 
-    for metric_number, ((column, label), axis) in enumerate(
-            zip(metrics, axes, strict=True)
-    ):
-        values = pd.to_numeric(
-            metric_table[column], errors='coerce'
-        ).to_numpy(dtype=float)
+    for metric_number, ((column, label), axis) in enumerate(zip(metrics, axes, strict=True)):
+        values = pd.to_numeric(metric_table[column], errors='coerce').to_numpy(dtype=float)
         defined = ~np.isnan(values)
         axis.barh(y[defined], values[defined], color=colors[defined], height=0.72)
         axis.scatter(
@@ -321,9 +280,7 @@ def _create_summary_plots(
         split: str,
         output_dir: Path,
 ) -> dict[str, Path]:
-    ranked_results = results.sort_values(
-        ['language_model', 'rank'], kind='stable'
-    ).reset_index(drop=True)
+    ranked_results = results.sort_values(['language_model', 'rank'], kind='stable').reset_index(drop=True)
     condition_labels = _condition_labels(ranked_results)
     is_best = ranked_results['is_best']
     context = _context_title(ranked_results)
@@ -475,34 +432,22 @@ def create_metric_plots(
     fairness_metrics = result_tables['fairness_metrics']
     confusion_matrix = result_tables['confusion_matrix']
 
-    selected_conditions = set(
-        results.loc[results['is_best'], 'condition']
-    )
+    selected_conditions = set(results.loc[results['is_best'], 'condition'])
     best_target_label_metrics = target_label_metrics.loc[
         target_label_metrics['condition'].isin(selected_conditions)
-    ].sort_values(['language_model', 'target_label'], kind='stable').reset_index(
-        drop=True
-    )
+    ].sort_values(['language_model', 'target_label'], kind='stable').reset_index(drop=True)
     best_audit_group_metrics = audit_group_metrics.loc[
         audit_group_metrics['condition'].isin(selected_conditions)
-    ].sort_values(
-        ['language_model', 'target_label', 'audit_group'], kind='stable'
-    ).reset_index(drop=True)
+    ].sort_values(['language_model', 'target_label', 'audit_group'], kind='stable').reset_index(drop=True)
     best_fairness_metrics = fairness_metrics.loc[
         fairness_metrics['condition'].isin(selected_conditions)
-    ].sort_values(['language_model', 'target_label'], kind='stable').reset_index(
-        drop=True
-    )
+    ].sort_values(['language_model', 'target_label'], kind='stable').reset_index(drop=True)
     best_confusion_matrix = confusion_matrix.loc[
         confusion_matrix['condition'].isin(selected_conditions)
-    ].sort_values(
-        ['language_model', 'true_label', 'predicted_label'], kind='stable'
-    ).reset_index(drop=True)
+    ].sort_values(['language_model', 'true_label', 'predicted_label'], kind='stable').reset_index(drop=True)
     best_overall_audit_group_metrics = best_audit_group_metrics.drop_duplicates(
         ['language_model', 'condition', 'audit_group']
-    ).sort_values(['language_model', 'audit_group'], kind='stable').reset_index(
-        drop=True
-    )
+    ).sort_values(['language_model', 'audit_group'], kind='stable').reset_index(drop=True)
 
     _validate_numeric_coverage(
         'results',
@@ -624,5 +569,6 @@ def create_metric_plots(
         evaluation_split,
         confusion_path,
     )
+
     plots[confusion_name] = confusion_path
     return plots

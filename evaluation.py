@@ -83,17 +83,17 @@ RESULT_NUMERIC_COLUMNS = frozenset({
 # Metric notation used in the calculations below:
 # c is a target label, g is an audit group, K is the number of target labels,
 # n_c is the true support of target label c, N is the number of evaluated rows,
-# and N_g is the number of evaluated rows in audit group g.
-# TP, FP, FN, and TN are one-vs-rest counts for c (and within g for audit-group metrics).
+# and N_g is the number of evaluated rows in an audit group g.
+# TP, FP, FN, and TN are one-vs.-rest counts for c (and within g for audit-group metrics).
 # Precision=PPV=TP/(TP+FP), Recall=TPR=TP/(TP+FN),
 # F1=2TP/(2TP+FP+FN), and Specificity=TNR=TN/(TN+FP).
 # Whenever defined, FPR=FP/(FP+TN)=1-Specificity and
 # FNR=FN/(FN+TP)=1-Recall. NPV=TN/(TN+FN).
-# D_m is the set of target labels where metric m is defined. Macro(m) averages m_c
-# over D_m; Weighted(m)=sum_{c in D_m}(n_c*m_c)/sum_{c in D_m}(n_c).
-# When m is defined for every target label, D_m contains all K target labels.
+# D_m is the set of target labels where metric m is defined; D_m+ also requires
+# n_c>0. Macro(m) averages over D_m, while Weighted(m) uses support weights over
+# D_m+. Coverage columns report |D_m|. An empty aggregate remains NaN.
 # For single-label multiclass predictions, sum_c(TP_c)=T and
-# sum_c(FP_c)=sum_c(FN_c)=E, where N=T+E. Therefore micro precision,
+# sum_c(FP_c)=sum_c(FN_c)=E, where N=T+E. Therefore, micro precision,
 # micro recall, micro F1, and accuracy all equal T/N. Also,
 # WeightedRecall=sum_c(n_c*TP_c/n_c)/N=sum_c(TP_c)/N=accuracy, while
 # BalancedAccuracy averages R_c over the supported target labels and equals
@@ -239,7 +239,7 @@ def _calculate_target_label_metrics(
         condition_metadata: dict[str, Any],
         target_labels: list[str],
 ) -> pd.DataFrame:
-    """Calculate one-vs-rest metrics for every target label."""
+    """Calculate one-vs.-rest metrics for every target label."""
 
     true_labels = condition_predictions['true_label']
     predicted_labels = condition_predictions['predicted_label']
@@ -291,7 +291,7 @@ def _calculate_audit_group_metrics(
         condition_metadata: dict[str, Any],
         target_labels: list[str],
 ) -> pd.DataFrame:
-    """Calculate one-vs-rest metrics within every audit group."""
+    """Calculate one-vs.-rest metrics within every audit group."""
 
     audit_groups: list[tuple[str, pd.DataFrame, float]] = []
     for audit_group, audit_group_predictions in condition_predictions.groupby('audit_group', sort=False):
@@ -307,7 +307,7 @@ def _calculate_audit_group_metrics(
     audit_group_rows: list[dict[str, Any]] = []
 
     # Audit-group accuracy=correct_g/N_g. For every target label c within audit
-    # group g, use the same one-vs-rest supports, counts, and rates as above,
+    # group g, use the same one-vs.-rest supports, counts, and rates as above,
     # but calculate them only from rows in g and use N_g for selection rate.
     # _safe_rate again returns NaN when a required denominator is zero.
     for target_label in target_labels:
@@ -389,10 +389,10 @@ def _calculate_overall_fairness_metrics(
 ) -> tuple[dict[str, float], dict[str, int]]:
     """Calculate overall fairness metrics and their target-label coverage."""
 
-    # If D_m contains the target labels where fairness metric m_c is defined, the
-    # minimum, mean, and maximum summarize m_c over D_m. For differences, the
-    # minimum is best and the maximum is worst; for demographic-parity ratio,
-    # where 1 is best, those interpretations are reversed.
+    # If D_m contains the target labels where fairness metric m_c is defined,
+    # mean=sum(m_c)/|D_m| and coverage=|D_m|; min and max use the same set.
+    # Difference minima are best and maxima are worst. For demographic-parity
+    # ratio, where 1 is best, those interpretations are reversed.
     coverage_column_by_fairness_metric = {
         'demographic_parity_difference': 'n_demographic_parity_defined_target_labels',
         'demographic_parity_ratio': 'n_demographic_parity_ratio_defined_target_labels',
@@ -446,7 +446,8 @@ def _calculate_overall_condition_metrics(
     # and weighted averages ignore an undefined target-label rate and weight only
     # the remaining defined rates; defined-target-label counts expose that coverage.
     # Accuracy=sum_c(TP_c)/N, worst-audit-group accuracy=min_g(accuracy_g), and the
-    # audit-group accuracy difference=max_g(accuracy_g)-min_g(accuracy_g).
+    # audit-group accuracy difference=max_g(accuracy_g)-min_g(accuracy_g). MCC and
+    # Cohen's kappa use scikit-learn's degenerate-case behavior.
     return {
         **condition_metadata,
         'sample_count': sample_count,

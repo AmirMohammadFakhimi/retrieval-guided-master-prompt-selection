@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 
@@ -6,7 +7,6 @@ import pandas as pd
 import configuration
 import dataset
 import modeling
-
 
 BATCH_SIZES = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 STEPS_BY_MODEL = {
@@ -61,15 +61,20 @@ def main() -> None:
                     rows_per_second = len(texts) / seconds
 
                     measurements.append({
-                            'embedding_model': model_id,
-                            'batch_size': batch_size,
-                            'step': step,
-                            'rows_per_second': rows_per_second,
-                        })
+                        'embedding_model': model_id,
+                        'batch_size': batch_size,
+                        'step': step,
+                        'rows_per_second': rows_per_second,
+                    })
 
-                    print(f'{model_id} | batch_size={batch_size} | step={step}/{steps} | {rows_per_second:.2f} rows/s')
+                    timestamp = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')
+                    print(
+                        f'[{timestamp}] {model_id} | batch_size={batch_size} | '
+                        f'step={step}/{steps} | {rows_per_second:.2f} rows/s'
+                    )
             except RuntimeError as error:
-                print(f'{model_id} | batch_size={batch_size} failed: {error}')
+                timestamp = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')
+                print(f'[{timestamp}] {model_id} | batch_size={batch_size} failed: {error}')
                 break
 
         del encoder

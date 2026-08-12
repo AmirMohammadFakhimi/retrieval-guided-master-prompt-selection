@@ -54,32 +54,30 @@ RESULT_NUMERIC_COLUMNS = frozenset({
     'worst_audit_group_accuracy',
     'audit_group_accuracy_difference',
     'mean_demographic_parity_difference',
+    'min_demographic_parity_difference',
     'max_demographic_parity_difference',
     'n_demographic_parity_defined_target_labels',
     'mean_equal_opportunity_difference',
+    'min_equal_opportunity_difference',
     'max_equal_opportunity_difference',
     'n_equal_opportunity_defined_target_labels',
     'mean_false_positive_rate_difference',
+    'min_false_positive_rate_difference',
     'max_false_positive_rate_difference',
     'n_false_positive_rate_defined_target_labels',
     'mean_equalized_odds_difference',
+    'min_equalized_odds_difference',
     'max_equalized_odds_difference',
     'n_equalized_odds_defined_target_labels',
     'mean_predictive_parity_difference',
+    'min_predictive_parity_difference',
     'max_predictive_parity_difference',
     'n_predictive_parity_defined_target_labels',
     'mean_demographic_parity_ratio',
     'min_demographic_parity_ratio',
+    'max_demographic_parity_ratio',
     'n_demographic_parity_ratio_defined_target_labels',
 })
-
-FAIRNESS_DIFFERENCE_METRICS = {
-    'demographic_parity_difference': 'n_demographic_parity_defined_target_labels',
-    'equal_opportunity_difference': 'n_equal_opportunity_defined_target_labels',
-    'false_positive_rate_difference': 'n_false_positive_rate_defined_target_labels',
-    'equalized_odds_difference': 'n_equalized_odds_defined_target_labels',
-    'predictive_parity_difference': 'n_predictive_parity_defined_target_labels',
-}
 
 
 # Metric notation used in the calculations below:
@@ -112,20 +110,20 @@ def resolve_metric_column(metric: str) -> str:
     return METRIC_COLUMN_ALIASES.get(metric, metric)
 
 
-def _safe_rate(numerator: int | float, denominator: int | float) -> float:
+def _safe_rate(numerator: float, denominator: float) -> float:
     """Return a rate, or NaN when its required denominator is absent."""
 
     return numerator / denominator if denominator else np.nan
 
 
-def _rate_range(values: list[float]) -> float:
+def _rate_range(values: pd.Series) -> float:
     """Return max minus min when at least two rates are defined."""
 
     defined = [value for value in values if not pd.isna(value)]
     return max(defined) - min(defined) if len(defined) >= 2 else np.nan
 
 
-def _rate_ratio(values: list[float]) -> float:
+def _rate_ratio(values: pd.Series) -> float:
     """Return min divided by max when at least two rates and a positive max exist."""
 
     defined = [value for value in values if not pd.isna(value)]
@@ -140,6 +138,7 @@ def _weighted_average(values: pd.Series, weights: pd.Series) -> float:
     defined = values.notna() & weights.gt(0)
     if not defined.any():
         return np.nan
+
     return float(np.average(values.loc[defined], weights=weights.loc[defined]))
 
 
@@ -185,235 +184,263 @@ def _condition_metadata(condition_predictions: pd.DataFrame) -> dict[str, Any]:
     return {column: condition_predictions[column].iloc[0] for column in CONDITION_COLUMNS}
 
 
+def _calculate_one_vs_rest_metrics(
+        true_labels: pd.Series,
+        predicted_labels: pd.Series,
+        target_label: str,
+) -> dict[str, int | float]:
+    """Calculate counts and rates with one target label treated as positive."""
+
+    # For each target label c, treat c as positive and every other label as
+    # negative. Positive support=TP+FN, negative support=FP+TN, and predicted
+    # positives=TP+FP. Selection rate=(TP+FP)/N; precision=PPV=TP/(TP+FP);
+    # recall=TPR=TP/(TP+FN); F1=2TP/(2TP+FP+FN); specificity=TNR=TN/(TN+FP);
+    # FPR=FP/(FP+TN); FNR=FN/(FN+TP); and NPV=TN/(TN+FN). _safe_rate returns
+    # NaN for a zero denominator. Whenever defined, FPR=1-specificity and
+    # FNR=1-recall.
+    actual_positive = true_labels == target_label
+    predicted_positive = predicted_labels == target_label
+
+    true_positive = int((actual_positive & predicted_positive).sum())
+    false_positive = int((~actual_positive & predicted_positive).sum())
+    false_negative = int((actual_positive & ~predicted_positive).sum())
+    true_negative = int((~actual_positive & ~predicted_positive).sum())
+
+    positive_support = true_positive + false_negative
+    negative_support = false_positive + true_negative
+    predicted_positive_count = true_positive + false_positive
+
+    return {
+        'positive_support': positive_support,
+        'negative_support': negative_support,
+        'predicted_positive': predicted_positive_count,
+        'tp': true_positive,
+        'fp': false_positive,
+        'fn': false_negative,
+        'tn': true_negative,
+        'selection_rate': predicted_positive_count / len(true_labels),
+        'precision': _safe_rate(true_positive, predicted_positive_count),
+        'recall': _safe_rate(true_positive, positive_support),
+        'f1': _safe_rate(
+            2 * true_positive,
+            2 * true_positive + false_positive + false_negative,
+        ),
+        'specificity': _safe_rate(true_negative, negative_support),
+        'false_positive_rate': _safe_rate(false_positive, negative_support),
+        'false_negative_rate': _safe_rate(false_negative, positive_support),
+        'negative_predictive_value': _safe_rate(
+            true_negative, true_negative + false_negative
+        ),
+    }
+
+
 def _calculate_target_label_metrics(
         condition_predictions: pd.DataFrame,
         condition_metadata: dict[str, Any],
         target_labels: list[str],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Calculate one-vs-rest target-label rates and the multiclass confusion matrix."""
+) -> pd.DataFrame:
+    """Calculate one-vs-rest metrics for every target label."""
 
     true_labels = condition_predictions['true_label']
     predicted_labels = condition_predictions['predicted_label']
-    sample_count = len(condition_predictions)
-    target_label_rows: list[dict[str, Any]] = []
 
-    for target_label in target_labels:
-        actual_positive = true_labels == target_label
-        predicted_positive = predicted_labels == target_label
+    target_label_rows = [
+        {
+            **condition_metadata,
+            'target_label': target_label,
+            **_calculate_one_vs_rest_metrics(true_labels, predicted_labels, target_label)
+        }
+        for target_label in target_labels
+    ]
 
-        true_positive = int((actual_positive & predicted_positive).sum())
-        false_positive = int((~actual_positive & predicted_positive).sum())
-        false_negative = int((actual_positive & ~predicted_positive).sum())
-        true_negative = int((~actual_positive & ~predicted_positive).sum())
+    return pd.DataFrame(target_label_rows)
 
-        positive_support = true_positive + false_negative
-        negative_support = false_positive + true_negative
-        predicted_positive_count = true_positive + false_positive
 
-        target_label_rows.append(
-            {
-                **condition_metadata,
-                'target_label': target_label,
-                'positive_support': positive_support,
-                'negative_support': negative_support,
-                'predicted_positive': predicted_positive_count,
-                'tp': true_positive,
-                'fp': false_positive,
-                'fn': false_negative,
-                'tn': true_negative,
-                'selection_rate': predicted_positive_count / sample_count,
-                'precision': _safe_rate(true_positive, predicted_positive_count),
-                'recall': _safe_rate(true_positive, positive_support),
-                'f1': _safe_rate(
-                    2 * true_positive,
-                    2 * true_positive + false_positive + false_negative,
-                ),
-                'specificity': _safe_rate(true_negative, negative_support),
-                # Whenever defined, FPR = 1 - specificity.
-                'false_positive_rate': _safe_rate(false_positive, negative_support),
-                # Whenever defined, FNR = 1 - recall.
-                'false_negative_rate': _safe_rate(false_negative, positive_support),
-                'negative_predictive_value': _safe_rate(
-                    true_negative, true_negative + false_negative
-                ),
-            }
-        )
+def _calculate_confusion_matrix(
+        condition_predictions: pd.DataFrame,
+        condition_metadata: dict[str, Any],
+        target_labels: list[str],
+) -> pd.DataFrame:
+    """Calculate the multiclass confusion matrix."""
 
-    confusion_counts = pd.crosstab(true_labels, predicted_labels).reindex(
+    confusion_counts = pd.crosstab(
+        condition_predictions['true_label'],
+        condition_predictions['predicted_label'],
+    ).reindex(
         index=target_labels,
         columns=target_labels,
         fill_value=0,
     )
+
     confusion_rows = [
         {
             **condition_metadata,
             'true_label': true_label,
             'predicted_label': predicted_label,
-            'count': int(confusion_counts.loc[true_label, predicted_label]),
+            'count': cast(int, confusion_counts.loc[true_label, predicted_label]),
         }
         for true_label in target_labels
         for predicted_label in target_labels
     ]
 
-    return pd.DataFrame(target_label_rows), pd.DataFrame(confusion_rows)
+    return pd.DataFrame(confusion_rows)
 
 
 def _calculate_audit_group_metrics(
         condition_predictions: pd.DataFrame,
         condition_metadata: dict[str, Any],
         target_labels: list[str],
-) -> tuple[pd.DataFrame, pd.DataFrame, list[float]]:
-    """Calculate rates within audit groups and disparities for every target label."""
+) -> pd.DataFrame:
+    """Calculate one-vs-rest metrics within every audit group."""
 
-    audit_grouped_predictions = list(condition_predictions.groupby('audit_group', sort=False))
-    audit_group_accuracy_values = [
-        cast(
+    audit_groups: list[tuple[str, pd.DataFrame, float]] = []
+    for audit_group, audit_group_predictions in condition_predictions.groupby('audit_group', sort=False):
+        audit_group_accuracy = cast(
             float,
             (audit_group_predictions['true_label'] == audit_group_predictions['predicted_label']).mean(),
         )
-        for _, audit_group_predictions in audit_grouped_predictions
-    ]
+
+        audit_groups.append(
+            (cast(str, audit_group), audit_group_predictions, audit_group_accuracy)
+        )
 
     audit_group_rows: list[dict[str, Any]] = []
-    fairness_rows: list[dict[str, Any]] = []
 
+    # Audit-group accuracy=correct_g/N_g. For every target label c within audit
+    # group g, use the same one-vs-rest supports, counts, and rates as above,
+    # but calculate them only from rows in g and use N_g for selection rate.
+    # _safe_rate again returns NaN when a required denominator is zero.
     for target_label in target_labels:
-        target_label_audit_group_rows: list[dict[str, Any]] = []
-        for (audit_group, audit_group_predictions), audit_group_accuracy in zip(
-                audit_grouped_predictions, audit_group_accuracy_values, strict=True
-        ):
-            true_labels = audit_group_predictions['true_label']
-            predicted_labels = audit_group_predictions['predicted_label']
+        for audit_group, audit_group_predictions, audit_group_accuracy in audit_groups:
+            audit_group_rows.append(
+                {
+                    **condition_metadata,
+                    'target_label': target_label,
+                    'audit_group': audit_group,
+                    'audit_group_n': len(audit_group_predictions),
+                    'audit_group_accuracy': audit_group_accuracy,
+                    **_calculate_one_vs_rest_metrics(
+                        audit_group_predictions['true_label'],
+                        audit_group_predictions['predicted_label'],
+                        target_label,
+                    ),
+                }
+            )
 
-            actual_positive = true_labels == target_label
-            predicted_positive = predicted_labels == target_label
+    return pd.DataFrame(audit_group_rows)
 
-            true_positive = int((actual_positive & predicted_positive).sum())
-            false_positive = int((~actual_positive & predicted_positive).sum())
-            false_negative = int((actual_positive & ~predicted_positive).sum())
-            true_negative = int((~actual_positive & ~predicted_positive).sum())
 
-            audit_group_n = len(audit_group_predictions)
-            positive_support = true_positive + false_negative
-            negative_support = false_positive + true_negative
-            predicted_positive_count = true_positive + false_positive
+def _calculate_target_label_fairness_metrics(
+        audit_group_metrics: pd.DataFrame,
+        condition_metadata: dict[str, Any],
+) -> pd.DataFrame:
+    """Compare each target label's rates across audit groups."""
 
-            audit_group_metric_row = {
-                **condition_metadata,
-                'target_label': target_label,
-                'audit_group': audit_group,
-                'audit_group_n': audit_group_n,
-                'audit_group_accuracy': audit_group_accuracy,
-                'positive_support': positive_support,
-                'negative_support': negative_support,
-                'predicted_positive': predicted_positive_count,
-                'tp': true_positive,
-                'fp': false_positive,
-                'fn': false_negative,
-                'tn': true_negative,
-                'selection_rate': predicted_positive_count / audit_group_n,
-                'precision': _safe_rate(true_positive, predicted_positive_count),
-                'recall': _safe_rate(true_positive, positive_support),
-                'f1': _safe_rate(
-                    2 * true_positive,
-                    2 * true_positive + false_positive + false_negative,
-                ),
-                'specificity': _safe_rate(true_negative, negative_support),
-                # Whenever defined, FPR = 1 - specificity.
-                'false_positive_rate': _safe_rate(false_positive, negative_support),
-                # Whenever defined, FNR = 1 - recall.
-                'false_negative_rate': _safe_rate(false_negative, positive_support),
-                'negative_predictive_value': _safe_rate(
-                    true_negative, true_negative + false_negative
-                ),
-            }
-            target_label_audit_group_rows.append(audit_group_metric_row)
-            audit_group_rows.append(audit_group_metric_row)
+    fairness_rows: list[dict[str, Any]] = []
+    grouped_audit_group_metrics = audit_group_metrics.groupby(
+        'target_label', sort=False
+    )
 
-        target_label_audit_group_frame = pd.DataFrame(target_label_audit_group_rows)
-        selection_rates = target_label_audit_group_frame['selection_rate'].tolist()
-        recalls = target_label_audit_group_frame['recall'].tolist()
-        false_positive_rates = target_label_audit_group_frame['false_positive_rate'].tolist()
-        precisions = target_label_audit_group_frame['precision'].tolist()
+    for target_label, target_label_audit_group_metrics in grouped_audit_group_metrics:
+        selection_rates = target_label_audit_group_metrics['selection_rate']
+        precisions = target_label_audit_group_metrics['precision']
+        recalls = target_label_audit_group_metrics['recall']
+        false_positive_rates = target_label_audit_group_metrics['false_positive_rate']
+
         equal_opportunity_difference = _rate_range(recalls)
         false_positive_rate_difference = _rate_range(false_positive_rates)
+
         equalized_odds_difference = (
             max(equal_opportunity_difference, false_positive_rate_difference)
-            if not pd.isna(equal_opportunity_difference)
-               and not pd.isna(false_positive_rate_difference)
+            if not pd.isna(equal_opportunity_difference) and not pd.isna(false_positive_rate_difference)
             else np.nan
         )
 
-        # Across audit groups g: DPD=max(SR_g)-min(SR_g), DPR=min(SR_g)/max(SR_g),
-        # EOD=max(TPR_g)-min(TPR_g), and FPRD=max(FPR_g)-min(FPR_g).
-        # Equalized-odds difference=max(EOD,FPRD); predictive-parity difference
-        # is max(PPV_g)-min(PPV_g). At least two defined audit-group rates are required.
+        # Across audit groups, demographic-parity difference=range(selection rate),
+        # demographic-parity ratio=min(selection rate)/max(selection rate),
+        # equal-opportunity difference=range(recall), false-positive-rate
+        # difference=range(FPR), equalized-odds difference=max(equal-opportunity
+        # difference, FPR difference), and predictive-parity difference=range(precision).
+        # A range needs at least two defined audit-group rates; the ratio additionally
+        # needs a positive maximum. The coverage columns expose how many rates remain.
         fairness_rows.append(
             {
                 **condition_metadata,
                 'target_label': target_label,
-                'n_audit_groups_compared': len(audit_grouped_predictions),
-                'n_selection_rate_defined_audit_groups': int(
-                    target_label_audit_group_frame['selection_rate'].notna().sum()
-                ),
-                'n_recall_defined_audit_groups': int(
-                    target_label_audit_group_frame['recall'].notna().sum()
-                ),
-                'n_false_positive_rate_defined_audit_groups': int(
-                    target_label_audit_group_frame['false_positive_rate'].notna().sum()
-                ),
-                'n_precision_defined_audit_groups': int(
-                    target_label_audit_group_frame['precision'].notna().sum()
-                ),
                 'demographic_parity_difference': _rate_range(selection_rates),
                 'demographic_parity_ratio': _rate_ratio(selection_rates),
                 'equal_opportunity_difference': equal_opportunity_difference,
                 'false_positive_rate_difference': false_positive_rate_difference,
                 'equalized_odds_difference': equalized_odds_difference,
-                'predictive_parity_difference': _rate_range(
-                    precisions
-                ),
+                'predictive_parity_difference': _rate_range(precisions),
+                'n_audit_groups_compared': len(target_label_audit_group_metrics),
+                'n_selection_rate_defined_audit_groups': int(selection_rates.notna().sum()),
+                'n_recall_defined_audit_groups': int(recalls.notna().sum()),
+                'n_false_positive_rate_defined_audit_groups': int(false_positive_rates.notna().sum()),
+                'n_precision_defined_audit_groups': int(precisions.notna().sum()),
             }
         )
 
-    return pd.DataFrame(audit_group_rows), pd.DataFrame(fairness_rows), audit_group_accuracy_values
+    return pd.DataFrame(fairness_rows)
 
 
-def _summarize_fairness(fairness_frame: pd.DataFrame) -> dict[str, float | int]:
-    """Aggregate disparities while reporting how many target labels define them."""
+def _calculate_overall_fairness_metrics(
+        fairness_metrics: pd.DataFrame,
+) -> tuple[dict[str, float], dict[str, int]]:
+    """Calculate overall fairness metrics and their target-label coverage."""
 
-    # If D_d contains the target labels where disparity d_c is defined, the reported
-    # mean is sum_{c in D_d}(d_c)/|D_d| and the worst difference is max(d_c).
-    # For demographic-parity ratio, where 1 is best, the worst ratio is min(d_c).
-    summary: dict[str, float | int] = {}
-    for metric, defined_count_column in FAIRNESS_DIFFERENCE_METRICS.items():
-        summary[f'mean_{metric}'] = fairness_frame[metric].mean()
-        summary[f'max_{metric}'] = fairness_frame[metric].max()
-        summary[defined_count_column] = int(fairness_frame[metric].notna().sum())
+    # If D_m contains the target labels where fairness metric m_c is defined, the
+    # minimum, mean, and maximum summarize m_c over D_m. For differences, the
+    # minimum is best and the maximum is worst; for demographic-parity ratio,
+    # where 1 is best, those interpretations are reversed.
+    coverage_column_by_fairness_metric = {
+        'demographic_parity_difference': 'n_demographic_parity_defined_target_labels',
+        'demographic_parity_ratio': 'n_demographic_parity_ratio_defined_target_labels',
+        'equal_opportunity_difference': 'n_equal_opportunity_defined_target_labels',
+        'false_positive_rate_difference': 'n_false_positive_rate_defined_target_labels',
+        'equalized_odds_difference': 'n_equalized_odds_defined_target_labels',
+        'predictive_parity_difference': 'n_predictive_parity_defined_target_labels',
+    }
 
-    ratio = fairness_frame['demographic_parity_ratio']
-    summary['mean_demographic_parity_ratio'] = ratio.mean()
-    summary['min_demographic_parity_ratio'] = ratio.min()
-    summary['n_demographic_parity_ratio_defined_target_labels'] = int(
-        ratio.notna().sum()
-    )
-    return summary
+    summary = {
+        f'mean_{metric}': float(fairness_metrics[metric].mean())
+        for metric in coverage_column_by_fairness_metric
+    }
+    summary.update({
+        f'min_{metric}': float(fairness_metrics[metric].min())
+        for metric in coverage_column_by_fairness_metric
+    })
+    summary.update({
+        f'max_{metric}': float(fairness_metrics[metric].max())
+        for metric in coverage_column_by_fairness_metric
+    })
+
+    coverage = {
+        defined_count_column: int(fairness_metrics[metric].notna().sum())
+        for metric, defined_count_column in coverage_column_by_fairness_metric.items()
+    }
+
+    return summary, coverage
 
 
-def _summarize_condition(
+def _calculate_overall_condition_metrics(
         condition_predictions: pd.DataFrame,
         condition_metadata: dict[str, Any],
-        target_label_frame: pd.DataFrame,
-        fairness_frame: pd.DataFrame,
-        audit_group_accuracy_values: list[float],
+        target_label_metrics: pd.DataFrame,
+        audit_group_metrics: pd.DataFrame,
+        fairness_metrics: pd.DataFrame,
 ) -> dict[str, Any]:
-    """Build one overall classification-and-fairness result row."""
+    """Calculate the overall classification-and-fairness result for one condition."""
 
     true_labels = condition_predictions['true_label']
     predicted_labels = condition_predictions['predicted_label']
     sample_count = len(condition_predictions)
-    accuracy = float((true_labels == predicted_labels).mean())
-    target_label_weights = target_label_frame['positive_support'] / sample_count
+    accuracy = cast(float, (true_labels == predicted_labels).mean())
+    target_label_weights = target_label_metrics['positive_support'] / sample_count
+    audit_group_accuracies = audit_group_metrics.drop_duplicates('audit_group')['audit_group_accuracy']
+    overall_fairness_metrics, fairness_metric_coverage = (
+        _calculate_overall_fairness_metrics(fairness_metrics)
+    )
 
     # The two shared columns below store formula-identical metrics once. Macro
     # and weighted averages ignore an undefined target-label rate and weight only
@@ -423,26 +450,23 @@ def _summarize_condition(
     return {
         **condition_metadata,
         'sample_count': sample_count,
-        'n_target_labels': len(target_label_frame),
-        'n_audit_groups': len(audit_group_accuracy_values),
+        'n_audit_groups': len(audit_group_accuracies),
         ACCURACY_METRIC_COLUMN: accuracy,
-        'macro_precision': target_label_frame['precision'].mean(),
-        MACRO_RECALL_METRIC_COLUMN: target_label_frame['recall'].mean(),
-        'macro_f1': target_label_frame['f1'].mean(),
-        'weighted_precision': _weighted_average(
-            target_label_frame['precision'], target_label_weights
-        ),
-        'weighted_f1': _weighted_average(target_label_frame['f1'], target_label_weights),
-        'n_precision_defined_target_labels': int(target_label_frame['precision'].notna().sum()),
-        'n_recall_defined_target_labels': int(target_label_frame['recall'].notna().sum()),
-        'n_f1_defined_target_labels': int(target_label_frame['f1'].notna().sum()),
-        'matthews_correlation_coefficient': matthews_corrcoef(
-            true_labels, predicted_labels
-        ),
+        'macro_precision': target_label_metrics['precision'].mean(),
+        MACRO_RECALL_METRIC_COLUMN: target_label_metrics['recall'].mean(),
+        'macro_f1': target_label_metrics['f1'].mean(),
+        'weighted_precision': _weighted_average(target_label_metrics['precision'], target_label_weights),
+        'weighted_f1': _weighted_average(target_label_metrics['f1'], target_label_weights),
+        'matthews_correlation_coefficient': matthews_corrcoef(true_labels, predicted_labels),
         'cohen_kappa': cohen_kappa_score(true_labels, predicted_labels),
-        'worst_audit_group_accuracy': min(audit_group_accuracy_values),
-        'audit_group_accuracy_difference': _rate_range(audit_group_accuracy_values),
-        **_summarize_fairness(fairness_frame),
+        'worst_audit_group_accuracy': min(audit_group_accuracies),
+        'audit_group_accuracy_difference': _rate_range(audit_group_accuracies),
+        **overall_fairness_metrics,
+        'n_target_labels': len(target_label_metrics),
+        'n_precision_defined_target_labels': int(target_label_metrics['precision'].notna().sum()),
+        'n_recall_defined_target_labels': int(target_label_metrics['recall'].notna().sum()),
+        'n_f1_defined_target_labels': int(target_label_metrics['f1'].notna().sum()),
+        **fairness_metric_coverage,
     }
 
 
@@ -453,42 +477,27 @@ def calculate_condition_metrics(
     """Calculate every metric table for one prediction condition."""
 
     _validate_metric_inputs(predictions, target_labels)
-    metadata = _condition_metadata(predictions)
-    target_label_frame, confusion_frame = _calculate_target_label_metrics(
-        predictions,
-        metadata,
-        target_labels,
-    )
-    audit_group_frame, fairness_frame, audit_group_accuracy_values = _calculate_audit_group_metrics(
-        predictions,
-        metadata,
-        target_labels,
-    )
+    condition_metadata = _condition_metadata(predictions)
+
+    target_label_metrics = _calculate_target_label_metrics(predictions, condition_metadata, target_labels)
+    confusion_matrix = _calculate_confusion_matrix(predictions, condition_metadata, target_labels)
+    audit_group_metrics = _calculate_audit_group_metrics(predictions, condition_metadata, target_labels)
+    fairness_metrics = _calculate_target_label_fairness_metrics(audit_group_metrics, condition_metadata)
 
     result = pd.DataFrame([
-        _summarize_condition(
+        _calculate_overall_condition_metrics(
             predictions,
-            metadata,
-            target_label_frame,
-            fairness_frame,
-            audit_group_accuracy_values,
+            condition_metadata,
+            target_label_metrics,
+            audit_group_metrics,
+            fairness_metrics,
         )
     ])
 
-    return (
-        result,
-        target_label_frame,
-        confusion_frame,
-        audit_group_frame,
-        fairness_frame,
-    )
+    return result, target_label_metrics, confusion_matrix, audit_group_metrics, fairness_metrics
 
 
-def rank_results(
-        results: pd.DataFrame,
-        metric: str,
-        direction: str,
-) -> pd.DataFrame:
+def rank_results(results: pd.DataFrame, metric: str, direction: str) -> pd.DataFrame:
     """Rank prompt configurations separately within each language model."""
 
     if direction not in {'maximize', 'minimize'}:
@@ -497,26 +506,21 @@ def rank_results(
     metric_column = resolve_metric_column(metric)
     if metric_column not in results.columns:
         available = ', '.join(results.select_dtypes(include='number').columns)
-        raise ValueError(
-            f'Unknown ranking metric {metric!r}. Numeric result columns: {available}'
-        )
+        raise ValueError(f'Unknown ranking metric {metric!r}. Numeric result columns: {available}')
     if not pd.api.types.is_numeric_dtype(results[metric_column]):
         raise ValueError(f'Ranking metric {metric!r} must be numeric')
 
-    defined_by_language_model = results.groupby('language_model', sort=False)[
-        metric_column
-    ].apply(lambda values: values.notna().any())
-    undefined_language_models = defined_by_language_model.index[
-        ~defined_by_language_model
-    ].tolist()
+    defined_by_language_model = results.groupby('language_model', sort=False)[metric_column].apply(
+        lambda values: values.notna().any()
+    )
+
+    undefined_language_models = defined_by_language_model.index[~defined_by_language_model].tolist()
     if undefined_language_models:
         raise ValueError(
-            f'Ranking metric {metric!r} is undefined for every condition of '
-            f'language models: {undefined_language_models}'
+            f'Ranking metric {metric!r} is undefined for every condition of language models: {undefined_language_models}'
         )
 
-    ranked = results.sort_values(
-        ['language_model', metric_column, 'condition'],
+    ranked = results.sort_values(['language_model', metric_column, 'condition'],
         ascending=[True, direction == 'minimize', True],
         na_position='last',
         kind='stable',
@@ -527,6 +531,7 @@ def rank_results(
         ranked.groupby('language_model', sort=False).cumcount() + 1,
     )
     ranked.insert(1, 'is_best', ranked['rank'].eq(1))
+
     return ranked
 
 
@@ -543,12 +548,14 @@ def write_best_prompts(
 
     metric_column = resolve_metric_column(ranking_metric)
     sections: list[str] = []
+
     for best in selected.to_dict('records'):
         resolved_prompt = prompt_templates[best['prompt_name']].format(
             target=display_column_name(best['target']),
             audit_column=display_column_name(best['audit_column']),
             labels=', '.join(target_labels),
         )
+
         sections.append(
             f'Language model: {best['language_model']}\n'
             f'Selected on {evaluation_split} metric: {ranking_metric} '
@@ -561,4 +568,5 @@ def write_best_prompts(
             f'Prompt name: {best['prompt_name']}\n\n'
             f'{resolved_prompt}'
         )
+
     path.write_text('\n\n---\n\n'.join(sections) + '\n', encoding='utf-8')

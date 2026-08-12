@@ -342,12 +342,12 @@ def run_experiment(
         prompt_templates,
     )
 
-    prediction_frames: list[pd.DataFrame] = []
-    result_frames: list[pd.DataFrame] = []
-    target_label_metric_frames: list[pd.DataFrame] = []
-    confusion_frames: list[pd.DataFrame] = []
-    audit_group_metric_frames: list[pd.DataFrame] = []
-    fairness_metric_frames: list[pd.DataFrame] = []
+    condition_prediction_tables: list[pd.DataFrame] = []
+    ranked_result_tables: list[pd.DataFrame] = []
+    condition_target_label_metric_tables: list[pd.DataFrame] = []
+    condition_confusion_matrices: list[pd.DataFrame] = []
+    condition_audit_group_metric_tables: list[pd.DataFrame] = []
+    condition_fairness_metric_tables: list[pd.DataFrame] = []
     language_model_progress_bar = tqdm(
         language_models_config,
         desc=f'Evaluating language models on {evaluation_split}',
@@ -357,7 +357,7 @@ def run_experiment(
     )
     for language_model_config in language_model_progress_bar:
         language_model_id = language_model_config['id']
-        language_model_result_frames: list[pd.DataFrame] = []
+        condition_result_tables: list[pd.DataFrame] = []
         tokenizer, language_model = modeling.load_language_model(
             language_model_id,
             language_model_config['revision'],
@@ -390,23 +390,23 @@ def run_experiment(
                 )
 
                 (
-                    condition_results,
+                    condition_result,
                     condition_target_label_metrics,
-                    condition_confusion,
+                    condition_confusion_matrix,
                     condition_audit_group_metrics,
                     condition_fairness_metrics,
                 ) = evaluation.calculate_condition_metrics(condition_predictions, target_labels)
 
-                prediction_frames.append(condition_predictions)
-                language_model_result_frames.append(condition_results)
-                target_label_metric_frames.append(condition_target_label_metrics)
-                confusion_frames.append(condition_confusion)
-                audit_group_metric_frames.append(condition_audit_group_metrics)
-                fairness_metric_frames.append(condition_fairness_metrics)
+                condition_prediction_tables.append(condition_predictions)
+                condition_result_tables.append(condition_result)
+                condition_target_label_metric_tables.append(condition_target_label_metrics)
+                condition_confusion_matrices.append(condition_confusion_matrix)
+                condition_audit_group_metric_tables.append(condition_audit_group_metrics)
+                condition_fairness_metric_tables.append(condition_fairness_metrics)
 
-            result_frames.append(
+            ranked_result_tables.append(
                 evaluation.rank_results(
-                    pd.concat(language_model_result_frames, ignore_index=True),
+                    pd.concat(condition_result_tables, ignore_index=True),
                     defaults['ranking_metric'],
                     defaults['ranking_direction'],
                 )
@@ -415,15 +415,15 @@ def run_experiment(
             del tokenizer, language_model
             modeling.clear_language_model_memory(device)
 
-    results = pd.concat(result_frames, ignore_index=True)
+    results = pd.concat(ranked_result_tables, ignore_index=True)
 
     result_tables = {
-        'predictions': pd.concat(prediction_frames, ignore_index=True),
+        'predictions': pd.concat(condition_prediction_tables, ignore_index=True),
         'results': results,
-        'target_label_metrics': pd.concat(target_label_metric_frames, ignore_index=True),
-        'confusion_matrix': pd.concat(confusion_frames, ignore_index=True),
-        'audit_group_metrics': pd.concat(audit_group_metric_frames, ignore_index=True),
-        'fairness_metrics': pd.concat(fairness_metric_frames, ignore_index=True),
+        'target_label_metrics': pd.concat(condition_target_label_metric_tables, ignore_index=True),
+        'confusion_matrix': pd.concat(condition_confusion_matrices, ignore_index=True),
+        'audit_group_metrics': pd.concat(condition_audit_group_metric_tables, ignore_index=True),
+        'fairness_metrics': pd.concat(condition_fairness_metric_tables, ignore_index=True),
         'source_dataset_counts': source_dataset_counts,
         'run_dataset_counts': run_dataset_counts,
     }

@@ -15,10 +15,10 @@ CONFIG_PATH = PROJECT_ROOT / 'config.yaml'
 TABLE_PREVIEW_ROWS = 500
 
 
-def _preview(frame: pd.DataFrame) -> pd.DataFrame:
+def _preview(table: pd.DataFrame) -> pd.DataFrame:
     """Keep the UI responsive while preserving complete CSV artifacts."""
 
-    return frame.head(TABLE_PREVIEW_ROWS)
+    return table.head(TABLE_PREVIEW_ROWS)
 
 
 def run_from_yaml(config_text: str):
@@ -199,7 +199,11 @@ difference is $\max_g SR_{c,g}-\min_g SR_{c,g}$. Equal-opportunity difference
 is the range of audit-group TPR; equalized-odds difference is the larger of the
 TPR and FPR ranges. Predictive-parity difference is the range of audit-group
 precision. A missing denominator produces `NaN`, and disparity needs two
-defined audit groups.
+defined audit groups. Condition summaries report the minimum, mean, and maximum
+defined target-label fairness metrics. For differences, minimum is best and
+maximum is worst; for demographic-parity ratio, these interpretations are
+reversed. Coverage reports defined counts alongside the corresponding total
+target-label or audit-group count.
 Quality and fairness tables should be interpreted together.
 """
             )

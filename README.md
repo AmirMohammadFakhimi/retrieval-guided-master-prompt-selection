@@ -226,12 +226,25 @@ $AuditGroupAccuracyDiff=Range_g(Accuracy_g)$. For target-label disparity $d_c$,
 let $D_d$ be the target labels where it is defined:
 
 $$
-MeanDisparity(d)=\frac{1}{|D_d|}\sum_{c\in D_d}d_c,\quad
-WorstDifference(d)=\max_{c\in D_d}d_c,\quad
-WorstDPRatio=\min_{c\in D_d}DPRatio_c
+MinimumDifference(d)=\min_{c\in D_d}d_c,\quad
+MeanDifference(d)=\frac{1}{|D_d|}\sum_{c\in D_d}d_c,\quad
+MaximumDifference(d)=\max_{c\in D_d}d_c
 $$
 
-The corresponding defined-target-label count is $|D_d|$.
+Demographic-parity ratio uses the same minimum, mean, and maximum aggregation,
+but because one is best, its minimum is the worst target-label value and its
+maximum is the best:
+
+$$
+MinimumDPRatio=\min_{c\in D_d}DPRatio_c,\quad
+MeanDPRatio=\frac{1}{|D_d|}\sum_{c\in D_d}DPRatio_c,\quad
+MaximumDPRatio=\max_{c\in D_d}DPRatio_c
+$$
+
+The corresponding defined-target-label count is $|D_d|$, reported alongside
+the total $K$. Per-target-label fairness coverage similarly reports each defined
+audit-group count alongside the total number of audit groups compared. Coverage
+plots show the total first so every defined count has an explicit denominator.
 
 The checked-in configuration has two retrieval methods, two embedding models,
 two example counts, one example order, two master prompts, and four language models:

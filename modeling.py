@@ -1,3 +1,4 @@
+import copy
 import gc
 import random
 import warnings
@@ -641,8 +642,9 @@ def score_allowed_labels(
     rendering with an empty assistant message isolates the exact
     language-model-specific assistant prefix, label tokens, and end markers.
     Mean rather than summed log-probability reduces the automatic disadvantage
-    of labels that use more tokenizer tokens. Labels are evaluated sequentially
-    to keep accelerator memory small.
+    of labels that use more tokenizer tokens. The common prompt is evaluated
+    once, then its inference cache is copied for each multi-token label so only
+    that label's remaining tokens require additional model work.
     """
 
     if not allowed_labels:
@@ -658,8 +660,8 @@ def score_allowed_labels(
     )
     empty_token_ids: list[int] = empty_answer_ids.tolist()
 
-    scores: dict[str, float] = {}
     reference_prompt_ids: torch.Tensor | None = None
+    candidate_ids_by_label: dict[str, torch.Tensor] = {}
     for label in allowed_labels:
         full_answer_ids = _apply_chat_template(
             [
@@ -710,27 +712,86 @@ def score_allowed_labels(
         elif not torch.equal(reference_prompt_ids, prompt_ids):
             raise RuntimeError('The chat template produced label-dependent prompt tokens')
 
-        scoring_ids = full_answer_ids[:candidate_stop - 1].unsqueeze(0).to(device)
+        candidate_ids_by_label[label] = candidate_ids
 
-        with torch.inference_mode():
-            # Omitting the final candidate token leaves exactly the C logits
-            # that predict the C candidate tokens.
-            output = language_model(input_ids=scoring_ids, use_cache=False, logits_to_keep=candidate_ids.numel())
-            candidate_logits = output.logits[0]
+    if reference_prompt_ids is None:
+        raise RuntimeError('The chat template produced no reference prompt')
 
-            if candidate_logits.shape[0] != candidate_ids.numel():
-                raise RuntimeError(f'Could not align language model logits for allowed label {label}')
+    prompt_input_ids = reference_prompt_ids.unsqueeze(0).to(device)
+    text_config = getattr(language_model.config, 'text_config', language_model.config)
+    return_shared_kv_states = getattr(text_config, 'num_kv_shared_layers', 0) > 0
 
-            token_log_probabilities = torch.log_softmax(candidate_logits.float(), dim=-1)
+    with torch.inference_mode():
+        prompt_output = language_model(
+            input_ids=prompt_input_ids,
+            use_cache=True,
+            logits_to_keep=1,
+            **({'return_shared_kv_states': True} if return_shared_kv_states else {}),
+        )
+        if prompt_output.logits.shape[:2] != (1, 1):
+            raise RuntimeError(
+                f'Could not align language model logits for the common prompt; '
+                f'received shape {tuple(prompt_output.logits.shape)}'
+            )
+        if prompt_output.past_key_values is None:
+            raise RuntimeError('The language model did not return an inference cache for the common prompt')
+
+        first_token_log_probabilities = torch.log_softmax(prompt_output.logits[0, 0].float(), dim=-1)
+        prompt_shared_kv_states = getattr(prompt_output, 'shared_kv_states', None)
+        if return_shared_kv_states and prompt_shared_kv_states is None:
+            raise RuntimeError('The language model did not return its required shared KV states')
+
+        scores: dict[str, float] = {}
+        for label in allowed_labels:
+            candidate_ids = candidate_ids_by_label[label]
             candidate_on_device = candidate_ids.to(device)
-            selected_token_log_probabilities = token_log_probabilities.gather(
-                1, candidate_on_device.unsqueeze(1)
-            ).squeeze(1)
+            selected_token_log_probabilities = first_token_log_probabilities[candidate_on_device[0]].unsqueeze(0)
+
+            if candidate_ids.numel() > 1:
+                candidate_cache, candidate_shared_kv_states = copy.deepcopy(
+                    (prompt_output.past_key_values, prompt_shared_kv_states)
+                )
+                continuation_ids = candidate_on_device[:-1].unsqueeze(0)
+                attention_mask = torch.ones(
+                    (1, reference_prompt_ids.numel() + continuation_ids.shape[1]),
+                    dtype=torch.long,
+                    device=device,
+                )
+                continuation_output = language_model(
+                    input_ids=continuation_ids,
+                    attention_mask=attention_mask,
+                    past_key_values=candidate_cache,
+                    use_cache=False,
+                    logits_to_keep=continuation_ids.shape[1],
+                    **(
+                        {'shared_kv_states': candidate_shared_kv_states}
+                        if candidate_shared_kv_states is not None
+                        else {}
+                    ),
+                )
+                continuation_logits = continuation_output.logits[0]
+
+                if continuation_logits.shape[0] != continuation_ids.shape[1]:
+                    raise RuntimeError(f'Could not align language model logits for allowed label {label}')
+
+                continuation_log_probabilities = torch.log_softmax(continuation_logits.float(), dim=-1)
+                selected_continuation_log_probabilities = continuation_log_probabilities.gather(
+                    1, candidate_on_device[1:].unsqueeze(1)
+                ).squeeze(1)
+
+                selected_token_log_probabilities = torch.cat((
+                    selected_token_log_probabilities,
+                    selected_continuation_log_probabilities,
+                ))
+
+                del continuation_output, candidate_cache, candidate_shared_kv_states
+
             score = selected_token_log_probabilities.mean().item()
 
-        if not np.isfinite(score):
-            raise RuntimeError(f'Language model returned a non-finite score for allowed label {label}')
-        scores[label] = score
+            if not np.isfinite(score):
+                raise RuntimeError(f'Language model returned a non-finite score for allowed label {label}')
+
+            scores[label] = score
 
     predicted_label = max(allowed_labels, key=lambda label: scores[label])
     return predicted_label, scores

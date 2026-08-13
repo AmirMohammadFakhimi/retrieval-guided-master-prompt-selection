@@ -1,5 +1,6 @@
 import gc
 import random
+import warnings
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -44,7 +45,7 @@ class SemanticResource(TypedDict):
     training_filter: str
 
 
-def _validate_embedding_input_lengths(
+def _warn_about_embedding_input_truncation(
         encoder: SentenceTransformer,
         rows: list[dict[str, Any]],
         embedding_model_id: str,
@@ -52,7 +53,7 @@ def _validate_embedding_input_lengths(
         input_kind: str,
         prompt: str = '',
 ) -> None:
-    """Reject embedding inputs that SentenceTransformers would truncate."""
+    """Report embedding inputs that SentenceTransformers will truncate."""
 
     if not rows:
         return
@@ -63,16 +64,21 @@ def _validate_embedding_input_lengths(
         add_special_tokens=True,
         padding=False,
         truncation=False,
+        verbose=False,
     )
 
+    overlength_inputs = []
     for row, token_ids in zip(rows, tokenized['input_ids'], strict=True):
         token_count = len(token_ids)
         if token_count > max_sequence_length:
-            raise ValueError(
-                f'{embedding_model_id} {input_kind} input {row[Column.ID]!r} contains {token_count} tokens, '
-                f'exceeding max_sequence_length={max_sequence_length}. '
-                f'Shorten the input or increase the limit only within the embedding model\'s native context capacity.'
-            )
+            overlength_inputs.append(f'{row[Column.ID]!r} ({token_count} tokens)')
+
+    if overlength_inputs:
+        warnings.warn(
+            f'{embedding_model_id} will truncate {len(overlength_inputs)} {input_kind} input(s) '
+            f'to max_sequence_length={max_sequence_length}: {", ".join(overlength_inputs)}',
+            stacklevel=2,
+        )
 
 
 def _language_model_context_length(tokenizer: PreTrainedTokenizerBase, language_model: PreTrainedModel) -> int:
@@ -196,7 +202,7 @@ def prepare_training_embedding_cache(
         try:
             for start in range(0, len(length_sorted_training_rows), LANCEDB_INGEST_BATCH_SIZE):
                 batch = length_sorted_training_rows[start:start + LANCEDB_INGEST_BATCH_SIZE]
-                _validate_embedding_input_lengths(
+                _warn_about_embedding_input_truncation(
                     encoder,
                     batch,
                     embedding_model_id,
@@ -303,7 +309,7 @@ def encode_embedding_queries(
     encoder = _load_embedding_encoder(embedding_model, device)
 
     try:
-        _validate_embedding_input_lengths(
+        _warn_about_embedding_input_truncation(
             encoder,
             queries,
             embedding_model_id,

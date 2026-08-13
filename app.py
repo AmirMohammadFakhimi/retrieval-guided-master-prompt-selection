@@ -183,8 +183,9 @@ deliberate configuration change and runs the same complete condition grid.
 
 Condition count per language model is retrieval methods × embedding models ×
 example counts × example orders × prompt templates. Total prediction calls
-also multiply by selected evaluation rows. Model context and embedding sequence
-limits fail explicitly rather than silently truncating inputs.
+also multiply by selected evaluation rows. Language-model context overflows
+fail explicitly; embedding inputs exceeding their configured sequence limit
+are reported and truncated by the encoder.
 """
             )
 

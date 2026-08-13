@@ -21,18 +21,22 @@ def main() -> None:
     device = modeling.choose_device(config['inference']['device'])
 
     source_rows = dataset.load_source_rows(config, project_root)
-    length_sorted_training_texts: list[str] = [
-        row[dataset.Column.HARD_TEXT]
-        for row in source_rows
-        if row[dataset.Column.SPLIT] == 'train'
-    ]
-    length_sorted_training_texts.sort(key=len, reverse=True)
+    length_sorted_training_rows = [row for row in source_rows if row[dataset.Column.SPLIT] == 'train']
+    length_sorted_training_rows.sort(key=lambda row: len(row[dataset.Column.HARD_TEXT]), reverse=True)
+    length_sorted_training_texts = [row[dataset.Column.HARD_TEXT] for row in length_sorted_training_rows]
     measurements = []
 
     for embedding_model in config['retrieval']['embedding_models']:
         model_id = embedding_model['id']
         steps = STEPS_BY_MODEL[model_id]
         encoder = modeling._load_embedding_encoder(embedding_model, device)
+        modeling._warn_about_embedding_input_truncation(
+            encoder,
+            length_sorted_training_rows[:steps * modeling.LANCEDB_INGEST_BATCH_SIZE],
+            model_id,
+            embedding_model['max_sequence_length'],
+            'benchmark training-document',
+        )
 
         for batch_size in BATCH_SIZES:
             try:

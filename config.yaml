@@ -75,7 +75,7 @@ retrieval:
       # dimension: positive integer equal to the encoder output width.
       dimension: 4096
       # max_sequence_length: positive integer no greater than the model's native
-      # context. Inputs beyond this configured limit fail instead of truncating.
+      # context. Longer inputs are reported, then truncated to this limit.
       max_sequence_length: 1024
       # batch_size: explicit positive performance setting used for preparation
       # and queries. It is never auto-tuned and does not invalidate the cache.

@@ -58,7 +58,8 @@ revision-pinned embedding model. Training rows are stably sorted from longest
 to shortest before they are divided into bounded input chunks. LanceDB stores
 that length order while each row's `train_order` retains its canonical source
 position. Its tables are independent of `dataset.professions` and
-`dataset.train_size`.
+`dataset.train_size`. Inputs exceeding an embedding model's configured sequence
+limit are reported by row ID and token count, then truncated by that encoder.
 
 `select_run_data(config, split_rows)` applies `dataset.train_size`, verifies
 that every retrieval example count fits the selected train pool, and returns
@@ -115,7 +116,8 @@ aggregate summary is stored in
 Training texts are globally sorted from longest to shortest before the timed
 chunks are selected, so the benchmark deliberately measures the longest rows.
 Each batch size receives one untimed internal batch as a warm-up before its
-measurements begin.
+measurements begin. Any selected input that the encoder will truncate is
+reported before timing begins.
 
 For the study, run once with `defaults.target: profession` and once with
 `defaults.target: gender`, changing no other experimental controls.

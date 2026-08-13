@@ -1,4 +1,5 @@
 import json
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +19,7 @@ import modeling
 import plotting
 
 RetrievalCache = dict[tuple[str, str, str], list[dict[str, Any]]]
+INCOMPLETE_RUN_DIRECTORY = 'incomplete_run'
 
 
 @dataclass
@@ -35,6 +37,38 @@ class PredictionContext:
     semantic_resources: dict[str, modeling.SemanticResource]
     training_profession_gender_pairs: tuple[tuple[str, str], ...]
     retrieval_cache: RetrievalCache
+
+
+def _incomplete_run_directory(root: Path, config: dict[str, Any]) -> Path:
+    """Return the single checkpoint directory for the configured output path."""
+
+    return root / config['defaults']['output_dir'] / INCOMPLETE_RUN_DIRECTORY
+
+
+def discard_incomplete_run(config: dict[str, Any], project_root: str | Path = '.') -> bool:
+    """Delete the configured output directory's incomplete run, if present."""
+
+    checkpoint_dir = _incomplete_run_directory(Path(project_root).resolve(), config)
+    if not checkpoint_dir.exists():
+        return False
+
+    shutil.rmtree(checkpoint_dir)
+    return True
+
+
+def _language_model_checkpoint_path(checkpoint_dir: Path, language_model_id: str) -> Path:
+    """Return the stable checkpoint path for one configured language model."""
+
+    filename = language_model_id.replace('/', '--')
+    return checkpoint_dir / f'{filename}_predictions.csv'
+
+
+def _write_language_model_checkpoint(path: Path, predictions: pd.DataFrame) -> None:
+    """Atomically save one language model's complete raw predictions."""
+
+    temporary_path = path.with_suffix('.tmp')
+    predictions.to_csv(temporary_path, index=False)
+    temporary_path.replace(path)
 
 
 def _build_conditions(
@@ -315,26 +349,17 @@ def run_experiment(
     defaults = config['defaults']
     evaluation_split = defaults['evaluation_split']
     target, audit_column, _, target_labels = dataset.task_settings(config)
+    checkpoint_dir = _incomplete_run_directory(root, config)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    progress(f'Incomplete-run checkpoints: {checkpoint_dir}')
 
     inference_settings = config['inference']
     language_models_config = inference_settings['language_models']
-    device = modeling.choose_device(inference_settings['device'])
-    progress(f'Using device: {device}')
     progress(f'Holding out {target}; language model input is hard_text + {audit_column}')
 
     source_rows = dataset.load_source_rows(config, root)
     source_splits = dataset.select_profession_splits(config, source_rows)
-    complete_training_rows = [row for row in source_rows if row[dataset.Column.SPLIT] == 'train']
     embedding_models = config['retrieval']['embedding_models']
-    database_path = root / config['retrieval']['lancedb_path']
-    cached_tables = {
-        embedding_model['id']: modeling.open_training_embedding_cache(
-            complete_training_rows,
-            embedding_model,
-            database_path,
-        )
-        for embedding_model in embedding_models
-    }
 
     source_dataset_counts = dataset.calculate_dataset_counts(config, source_splits)
     train, evaluation_rows, evaluation_per_cell = dataset.select_run_data(config, source_splits)
@@ -353,44 +378,11 @@ def run_experiment(
         f'selected {len(train)} train and {len(evaluation_rows)} {evaluation_split} rows for this run'
     )
 
-    training_filter = modeling.build_training_filter(train, dataset.train_size_limit(config))
-    for embedding_model_id, table in cached_tables.items():
-        filtered_row_count = table.count_rows(training_filter)
-        if filtered_row_count != len(train):
-            raise RuntimeError(
-                f'{embedding_model_id} training filter selected {filtered_row_count} cached rows; '
-                f'expected the configured training pool size {len(train)}'
-            )
-
-    semantic_resources = _prepare_semantic_resources(
-        evaluation_rows,
-        embedding_models,
-        cached_tables,
-        training_filter,
-        device,
-    )
-
     retrieval_methods = config['retrieval']['methods']
     example_counts = config['retrieval']['example_counts']
     example_orders = config['retrieval']['example_orders']
     prompt_templates = config['prompt_templates']
 
-    training_profession_gender_pairs = tuple(sorted(
-        {(row[dataset.Column.PROFESSION], row[dataset.Column.GENDER]) for row in train}
-    ))
-    prediction_context = PredictionContext(
-        example_order_seed=defaults['seed'],
-        dataset_shuffle_seed=config['dataset']['shuffle_seed'],
-        evaluation_split=evaluation_split,
-        target=target,
-        audit_column=audit_column,
-        target_labels=target_labels,
-        max_example_count=max(example_counts),
-        device=device,
-        semantic_resources=semantic_resources,
-        training_profession_gender_pairs=training_profession_gender_pairs,
-        retrieval_cache={},
-    )
     conditions = _build_conditions(
         target,
         retrieval_methods,
@@ -401,12 +393,15 @@ def run_experiment(
         prompt_templates,
     )
 
+    resumed_language_models: list[str] = []
+    prediction_context: PredictionContext | None = None
     condition_prediction_tables: list[pd.DataFrame] = []
     ranked_result_tables: list[pd.DataFrame] = []
     condition_target_label_metric_tables: list[pd.DataFrame] = []
     condition_confusion_matrices: list[pd.DataFrame] = []
     condition_audit_group_metric_tables: list[pd.DataFrame] = []
     condition_fairness_metric_tables: list[pd.DataFrame] = []
+
     language_model_progress_bar = tqdm(
         language_models_config,
         desc=f'Evaluating language models on {evaluation_split}',
@@ -416,63 +411,133 @@ def run_experiment(
     )
     for language_model_config in language_model_progress_bar:
         language_model_id = language_model_config['id']
-        condition_result_tables: list[pd.DataFrame] = []
-        tokenizer, language_model = modeling.load_language_model(
-            language_model_id,
-            language_model_config['revision'],
-            device,
-            language_model_config['dtype'],
-        )
+        conditions_for_language_model = [
+            condition
+            for condition in conditions
+            if condition['language_model'] == language_model_id
+        ]
+        checkpoint_path = _language_model_checkpoint_path(checkpoint_dir, language_model_id)
 
-        try:
-            conditions_for_language_model = [
-                condition
-                for condition in conditions
-                if condition['language_model'] == language_model_id
-            ]
-            condition_progress_bar = tqdm(
-                conditions_for_language_model,
-                desc=f'Evaluating {language_model_id}',
-                unit='condition',
-                position=1,
-                leave=True,
-            )
-            for condition in condition_progress_bar:
-                condition_predictions = pd.DataFrame(
-                    _predict_labels_for_condition(
-                        prediction_context,
-                        condition,
-                        evaluation_rows,
-                        tokenizer,
-                        language_model,
+        if checkpoint_path.exists():
+            progress(f'Resuming completed language model: {language_model_id}')
+            model_predictions = pd.read_csv(checkpoint_path)
+            resumed_language_models.append(language_model_id)
+        else:
+            if prediction_context is None:
+                device = modeling.choose_device(inference_settings['device'])
+                progress(f'Using device: {device}')
+                complete_training_rows = [
+                    row for row in source_rows if row[dataset.Column.SPLIT] == 'train'
+                ]
+                database_path = root / config['retrieval']['lancedb_path']
+                cached_tables = {
+                    embedding_model['id']: modeling.open_training_embedding_cache(
+                        complete_training_rows,
+                        embedding_model,
+                        database_path,
                     )
+                    for embedding_model in embedding_models
+                }
+
+                training_filter = modeling.build_training_filter(train, dataset.train_size_limit(config))
+                for embedding_model_id, table in cached_tables.items():
+                    filtered_row_count = table.count_rows(training_filter)
+                    if filtered_row_count != len(train):
+                        raise RuntimeError(
+                            f'{embedding_model_id} training filter selected '
+                            f'{filtered_row_count} cached rows; expected the configured '
+                            f'training pool size {len(train)}'
+                        )
+
+                semantic_resources = _prepare_semantic_resources(
+                    evaluation_rows,
+                    embedding_models,
+                    cached_tables,
+                    training_filter,
+                    device,
+                )
+                training_profession_gender_pairs = tuple(sorted(
+                    {(row[dataset.Column.PROFESSION], row[dataset.Column.GENDER]) for row in train}
+                ))
+                prediction_context = PredictionContext(
+                    example_order_seed=defaults['seed'],
+                    dataset_shuffle_seed=config['dataset']['shuffle_seed'],
+                    evaluation_split=evaluation_split,
+                    target=target,
+                    audit_column=audit_column,
+                    target_labels=target_labels,
+                    max_example_count=max(example_counts),
+                    device=device,
+                    semantic_resources=semantic_resources,
+                    training_profession_gender_pairs=training_profession_gender_pairs,
+                    retrieval_cache={},
                 )
 
-                (
-                    condition_result,
-                    condition_target_label_metrics,
-                    condition_confusion_matrix,
-                    condition_audit_group_metrics,
-                    condition_fairness_metrics,
-                ) = evaluation.calculate_condition_metrics(condition_predictions, target_labels)
-
-                condition_prediction_tables.append(condition_predictions)
-                condition_result_tables.append(condition_result)
-                condition_target_label_metric_tables.append(condition_target_label_metrics)
-                condition_confusion_matrices.append(condition_confusion_matrix)
-                condition_audit_group_metric_tables.append(condition_audit_group_metrics)
-                condition_fairness_metric_tables.append(condition_fairness_metrics)
-
-            ranked_result_tables.append(
-                evaluation.rank_results(
-                    pd.concat(condition_result_tables, ignore_index=True),
-                    defaults['ranking_metric'],
-                    defaults['ranking_direction'],
-                )
+            tokenizer, language_model = modeling.load_language_model(
+                language_model_id,
+                language_model_config['revision'],
+                device,
+                language_model_config['dtype'],
             )
-        finally:
-            del tokenizer, language_model
-            modeling.clear_model_memory(device)
+
+            try:
+                model_condition_prediction_tables: list[pd.DataFrame] = []
+                condition_progress_bar = tqdm(
+                    conditions_for_language_model,
+                    desc=f'Evaluating {language_model_id}',
+                    unit='condition',
+                    position=1,
+                    leave=True,
+                )
+                for condition in condition_progress_bar:
+                    model_condition_prediction_tables.append(pd.DataFrame(
+                        _predict_labels_for_condition(
+                            prediction_context,
+                            condition,
+                            evaluation_rows,
+                            tokenizer,
+                            language_model,
+                        )
+                    ))
+
+                model_predictions = pd.concat(
+                    model_condition_prediction_tables,
+                    ignore_index=True,
+                )
+                _write_language_model_checkpoint(checkpoint_path, model_predictions)
+                progress(f'Checkpointed completed language model: {language_model_id}')
+            finally:
+                del tokenizer, language_model
+                modeling.clear_model_memory(device)
+
+        condition_result_tables: list[pd.DataFrame] = []
+        for condition in conditions_for_language_model:
+            condition_predictions = model_predictions.loc[
+                model_predictions['condition'].eq(condition['condition'])
+            ].copy()
+
+            (
+                condition_result,
+                condition_target_label_metrics,
+                condition_confusion_matrix,
+                condition_audit_group_metrics,
+                condition_fairness_metrics,
+            ) = evaluation.calculate_condition_metrics(condition_predictions, target_labels)
+
+            condition_prediction_tables.append(condition_predictions)
+            condition_result_tables.append(condition_result)
+            condition_target_label_metric_tables.append(condition_target_label_metrics)
+            condition_confusion_matrices.append(condition_confusion_matrix)
+            condition_audit_group_metric_tables.append(condition_audit_group_metrics)
+            condition_fairness_metric_tables.append(condition_fairness_metrics)
+
+        ranked_result_tables.append(
+            evaluation.rank_results(
+                pd.concat(condition_result_tables, ignore_index=True),
+                defaults['ranking_metric'],
+                defaults['ranking_direction'],
+            )
+        )
 
     results = pd.concat(ranked_result_tables, ignore_index=True)
 
@@ -486,7 +551,10 @@ def run_experiment(
         'source_dataset_counts': source_dataset_counts,
         'run_dataset_counts': run_dataset_counts,
     }
+
     output = _write_run_outputs(root, config, result_tables, target_labels)
+    discard_incomplete_run(config, root)
+    output['resumed_language_models'] = resumed_language_models
 
     progress(f'Finished: {output['run_dir']}')
     return output

@@ -89,10 +89,25 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
-In the app, first select **Prepare all training embeddings**. Once preparation
-finishes, **Run configured split** embeds only the selected evaluation queries
-and retrieves exact neighbors from the eligible part of the complete table.
-The notebook exposes the same two explicit calls.
+In the app, first select **Prepare all training embeddings**. When a language
+model CSV is missing, **Run configured split** embeds only the selected
+evaluation queries and retrieves exact neighbors from the eligible part of the
+complete table. The notebook exposes the same two explicit calls.
+
+During an experiment, each completed language model's raw predictions are saved
+atomically under `<output_dir>/incomplete_run/`. On restart, an existing model
+CSV is reused and a missing one is computed. This deliberately does not compare
+the current YAML with the cached run, so discard the incomplete run before
+changing experiment settings. Use **Discard incomplete run** in the app or
+`discard_incomplete_run(config, PROJECT_ROOT)` in the notebook. After every
+final artifact is written successfully, `incomplete_run/` is deleted automatically.
+
+Completed runs can be displayed without rerunning the experiment. In the app,
+select a directory under **Completed runs** and choose **Load selected run**.
+After finishing a run in the notebook, choose **Refresh completed runs** first;
+the newest run is selected automatically, and older completed runs remain in
+the dropdown. Loading reads that run's saved configuration, CSVs, plots, and
+best-prompt report only—it does not load models or recompute results.
 
 You can also run
 [`Fairness_Aware_ICL_Complete_Pipeline.ipynb`](Fairness_Aware_ICL_Complete_Pipeline.ipynb).

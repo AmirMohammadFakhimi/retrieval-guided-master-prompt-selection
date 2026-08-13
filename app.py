@@ -7,12 +7,22 @@ import pandas as pd
 import yaml
 
 import evaluation
-from pipeline import prepare_embedding_cache, run_experiment
+from pipeline import discard_incomplete_run, prepare_embedding_cache, run_experiment
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = PROJECT_ROOT / 'config.yaml'
 TABLE_PREVIEW_ROWS = 500
+RESULT_TABLE_NAMES = (
+    'predictions',
+    'results',
+    'target_label_metrics',
+    'confusion_matrix',
+    'audit_group_metrics',
+    'fairness_metrics',
+    'source_dataset_counts',
+    'run_dataset_counts',
+)
 
 
 def _preview(table: pd.DataFrame) -> pd.DataFrame:
@@ -21,13 +31,199 @@ def _preview(table: pd.DataFrame) -> pd.DataFrame:
     return table.head(TABLE_PREVIEW_ROWS)
 
 
+def _load_yaml_mapping(text: str, description: str) -> dict:
+    """Load one YAML mapping with a useful error for UI actions."""
+
+    config = yaml.safe_load(text)
+    if not isinstance(config, dict):
+        raise ValueError(f'{description} must be a YAML mapping')
+    return config
+
+
+def _completed_run_choices(config_text: str) -> list[tuple[str, str]]:
+    """Return completed run directories under the edited output directory."""
+
+    config = _load_yaml_mapping(config_text, 'The configuration')
+    output_dir = (PROJECT_ROOT / config['defaults']['output_dir']).resolve()
+    if not output_dir.exists():
+        return []
+
+    run_dirs = [
+        path
+        for path in output_dir.iterdir()
+        if path.is_dir() and '-run-' in path.name
+    ]
+    run_dirs.sort(
+        key=lambda path: path.name.rsplit('-run-', maxsplit=1)[1],
+        reverse=True,
+    )
+
+    choices: list[tuple[str, str]] = []
+    for run_dir in run_dirs:
+        config_path = run_dir / 'config_used.yaml'
+        best_prompt_paths = list(run_dir.glob('*_best_prompts.txt'))
+        if not config_path.is_file() or not best_prompt_paths:
+            continue
+
+        label = run_dir.name
+        try:
+            archived_config = _load_yaml_mapping(
+                config_path.read_text(encoding='utf-8'),
+                f'{config_path}',
+            )
+            label = f'{run_dir.name} — target: {archived_config["defaults"]["target"]}'
+        except Exception:
+            pass
+        choices.append((label, str(run_dir.resolve())))
+
+    return choices
+
+
+def refresh_completed_runs(config_text: str):
+    """Refresh completed-run choices and select the newest run."""
+
+    try:
+        choices = _completed_run_choices(config_text)
+        selected = choices[0][1] if choices else None
+        return gr.update(choices=choices, value=selected)
+    except Exception as exc:
+        gr.Warning(f'Could not refresh completed runs: {type(exc).__name__}: {exc}')
+        return gr.update(choices=[], value=None)
+
+
+def _present_output(
+        output: dict,
+        config: dict,
+        action: str,
+) -> tuple:
+    """Return the common result views for fresh and archived runs."""
+
+    evaluation_split = output['evaluation_split']
+    results = output['results'].copy()
+    selected = results.loc[results['is_best'].astype(bool)].copy()
+    language_model_ids = [
+        entry['id'] for entry in config['inference']['language_models']
+    ]
+    if (
+            len(selected) != len(language_model_ids)
+            or selected['language_model'].nunique() != len(language_model_ids)
+            or set(selected['language_model']) != set(language_model_ids)
+    ):
+        raise ValueError(f'Expected exactly one best {evaluation_split} condition per language model')
+
+    configured_metric = config['defaults']['ranking_metric']
+    metric_column = evaluation.resolve_metric_column(configured_metric)
+    selection_lines = []
+    for language_model_id in language_model_ids:
+        row = selected.loc[
+            selected['language_model'].eq(language_model_id)
+        ].iloc[0]
+        selection_lines.append(
+            f'- **{language_model_id}**: rank 1 with '
+            f'`{configured_metric}={row[metric_column]}`'
+        )
+
+    prediction_columns = [
+        'evaluation_split',
+        'query_id',
+        'true_label',
+        'audit_group',
+        'predicted_label',
+        'condition',
+        'retrieval_method',
+        'embedding_model',
+        'language_model',
+        'example_count',
+        'example_order',
+        'prompt_name',
+        'label_scores',
+    ]
+    selected_predictions = output['predictions'].loc[
+        output['predictions']['condition'].isin(selected['condition']),
+        prediction_columns,
+    ]
+    plot_gallery = [
+        (str(path), name.replace('_', ' ').title())
+        for name, path in output['plots'].items()
+    ]
+    status_lines = [
+        f'{action} **{evaluation_split}** run.  ',
+        f'Complete artifacts: `{output["run_dir"]}`  ',
+    ]
+    if 'resumed_language_models' in output:
+        resumed_language_models = output['resumed_language_models']
+        resumed = ', '.join(resumed_language_models) if resumed_language_models else 'none'
+        status_lines.append(f'Resumed completed models: `{resumed}`  ')
+    status_lines.extend([
+        f'Ranking metric: `{configured_metric}` '
+        f'(`{config["defaults"]["ranking_direction"]}`)  ',
+        '',
+        *selection_lines,
+        '',
+        f'Best-prompt report: `{output["best_prompts"]}`  ',
+        f'UI tables show at most {TABLE_PREVIEW_ROWS} rows; CSV files are complete.',
+    ])
+
+    return (
+        '\n'.join(status_lines),
+        selected,
+        _preview(results),
+        _preview(output['target_label_metrics']),
+        _preview(output['fairness_metrics']),
+        _preview(output['audit_group_metrics']),
+        _preview(output['confusion_matrix']),
+        _preview(selected_predictions),
+        _preview(output['source_dataset_counts']),
+        _preview(output['run_dataset_counts']),
+        plot_gallery,
+    )
+
+
+def load_completed_run(config_text: str, run_directory: str | None):
+    """Load one completed run from its archived artifacts only."""
+
+    try:
+        if not run_directory:
+            raise ValueError('Select a completed run first')
+
+        run_dir = Path(run_directory).resolve()
+        completed_run_paths = {
+            path for _, path in _completed_run_choices(config_text)
+        }
+        if str(run_dir) not in completed_run_paths:
+            raise ValueError('The selected directory is not a completed run')
+
+        config_path = run_dir / 'config_used.yaml'
+        config = _load_yaml_mapping(
+            config_path.read_text(encoding='utf-8'),
+            f'{config_path}',
+        )
+        evaluation_split = config['defaults']['evaluation_split']
+        output = {
+            'evaluation_split': evaluation_split,
+            'run_dir': run_dir,
+            **{
+                table_name: pd.read_csv(
+                    run_dir / f'{evaluation_split}_{table_name}.csv'
+                )
+                for table_name in RESULT_TABLE_NAMES
+            },
+            'plots': {
+                path.stem: path
+                for path in sorted((run_dir / 'plots').glob('*.png'))
+            },
+            'best_prompts': run_dir / f'{evaluation_split}_best_prompts.txt',
+        }
+        return _present_output(output, config, 'Loaded existing')
+    except Exception as exc:
+        return (f'Error: {type(exc).__name__}: {exc}',) + (None,) * 10
+
+
 def prepare_from_yaml(config_text: str) -> str:
     """Prepare complete training embeddings from the edited YAML."""
 
     try:
-        config = yaml.safe_load(config_text)
-        if not isinstance(config, dict):
-            raise ValueError('The configuration must be a YAML mapping')
+        config = _load_yaml_mapping(config_text, 'The configuration')
 
         row_counts = prepare_embedding_cache(config, PROJECT_ROOT, print)
         prepared_lines = [
@@ -42,85 +238,28 @@ def prepare_from_yaml(config_text: str) -> str:
         return f'Error: {type(exc).__name__}: {exc}'
 
 
+def discard_incomplete_run_from_yaml(config_text: str) -> str:
+    """Discard the one incomplete run under the edited YAML's output directory."""
+
+    try:
+        config = _load_yaml_mapping(config_text, 'The configuration')
+
+        discarded = discard_incomplete_run(config, PROJECT_ROOT)
+        if discarded:
+            return 'Discarded the incomplete run. The next experiment will start from the first model.'
+        return 'There is no incomplete run to discard.'
+    except Exception as exc:
+        return f'Error: {type(exc).__name__}: {exc}'
+
+
 def run_from_yaml(config_text: str):
     """Run the edited YAML and return split-aware teaching views."""
 
     try:
-        config = yaml.safe_load(config_text)
-        if not isinstance(config, dict):
-            raise ValueError('The configuration must be a YAML mapping')
+        config = _load_yaml_mapping(config_text, 'The configuration')
 
         output = run_experiment(config, PROJECT_ROOT, print)
-        evaluation_split = output['evaluation_split']
-        results = output['results'].copy()
-        selected = results.loc[results['is_best'].astype(bool)].copy()
-        language_model_ids = [
-            entry['id'] for entry in config['inference']['language_models']
-        ]
-        if (
-                len(selected) != len(language_model_ids)
-                or selected['language_model'].nunique() != len(language_model_ids)
-                or set(selected['language_model']) != set(language_model_ids)
-        ):
-            raise ValueError(f'Expected exactly one best {evaluation_split} condition per language model')
-
-        configured_metric = config['defaults']['ranking_metric']
-        metric_column = evaluation.resolve_metric_column(configured_metric)
-        selection_lines = []
-        for language_model_id in language_model_ids:
-            row = selected.loc[
-                selected['language_model'].eq(language_model_id)
-            ].iloc[0]
-            selection_lines.append(f'- **{language_model_id}**: rank 1 with `{configured_metric}={row[metric_column]}`')
-
-        prediction_columns = [
-            'evaluation_split',
-            'query_id',
-            'true_label',
-            'audit_group',
-            'predicted_label',
-            'condition',
-            'retrieval_method',
-            'embedding_model',
-            'language_model',
-            'example_count',
-            'example_order',
-            'prompt_name',
-            'label_scores',
-        ]
-        selected_predictions = output['predictions'].loc[
-            output['predictions']['condition'].isin(selected['condition']),
-            prediction_columns,
-        ]
-        plot_gallery = [
-            (str(path), name.replace('_', ' ').title())
-            for name, path in output['plots'].items()
-        ]
-        status = '\n'.join([
-            f'Finished the **{evaluation_split}** workflow.  ',
-            f'Complete artifacts: `{output["run_dir"]}`  ',
-            f'Ranking metric: `{configured_metric}` '
-            f'(`{config["defaults"]["ranking_direction"]}`)  ',
-            '',
-            *selection_lines,
-            '',
-            f'Best-prompt report: `{output["best_prompts"]}`  ',
-            f'UI tables show at most {TABLE_PREVIEW_ROWS} rows; CSV files are complete.',
-        ])
-
-        return (
-            status,
-            selected,
-            _preview(results),
-            _preview(output['target_label_metrics']),
-            _preview(output['fairness_metrics']),
-            _preview(output['audit_group_metrics']),
-            _preview(output['confusion_matrix']),
-            _preview(selected_predictions),
-            _preview(output['source_dataset_counts']),
-            _preview(output['run_dataset_counts']),
-            plot_gallery,
-        )
+        return _present_output(output, config, 'Finished')
     except Exception as exc:
         return (f'Error: {type(exc).__name__}: {exc}',) + (None,) * 10
 
@@ -148,15 +287,17 @@ counts never sends it to an encoder or language model.
    rows, then cap the retrieval training pool.
 3. Filter the complete vector table to that pool and balance only the evaluation
    split by profession and gender.
-4. Embed only the selected evaluation rows.
-5. Load one language model once; for each of its conditions, predict and
-   immediately calculate metrics.
-6. Rank conditions inside that language model and mark exactly one `is_best`.
-7. Release the model, continue to the next model, then write complete tables,
-   plots, and best prompts.
+4. If a model CSV is missing, embed only the selected evaluation rows.
+5. Load each missing language model once, predict every condition, then
+   atomically save its raw predictions under `<output_dir>/incomplete_run/`.
+6. For each completed or resumed model, calculate and rank every condition and
+   mark exactly one `is_best`.
+7. Write complete tables, plots, and best prompts, then delete `incomplete_run`.
 
 There is no automatic validation-to-test transition. Switching to `test` is a
 deliberate configuration change and runs the same complete condition grid.
+Restarting reuses every available model CSV. Checkpoints are not compared with
+the edited YAML, so discard the incomplete run before changing experiment settings.
 """
             )
 
@@ -439,7 +580,18 @@ experiments with the same prompt candidates and separate winners.
         with gr.Row():
             prepare_button = gr.Button('Prepare all training embeddings')
             run_button = gr.Button('Run configured split', variant='primary')
+            discard_button = gr.Button('Discard incomplete run')
         status = gr.Markdown()
+
+        with gr.Row():
+            completed_runs = gr.Dropdown(
+                choices=[],
+                label='Completed runs',
+                info='Newest first; refresh after completing a run in the notebook.',
+                scale=3,
+            )
+            refresh_runs_button = gr.Button('Refresh completed runs')
+            load_run_button = gr.Button('Load selected run')
 
         with gr.Tabs():
             with gr.Tab('Best conditions'):
@@ -494,6 +646,7 @@ experiments with the same prompt candidates and separate winners.
             inputs=config_text,
             outputs=status,
             concurrency_limit=1,
+            concurrency_id='experiment_files',
         )
         run_button.click(
             run_from_yaml,
@@ -512,6 +665,47 @@ experiments with the same prompt candidates and separate winners.
                 plot_gallery,
             ],
             concurrency_limit=1,
+            concurrency_id='experiment_files',
+        )
+        discard_button.click(
+            discard_incomplete_run_from_yaml,
+            inputs=config_text,
+            outputs=status,
+            concurrency_limit=1,
+            concurrency_id='experiment_files',
+        )
+        refresh_runs_button.click(
+            refresh_completed_runs,
+            inputs=config_text,
+            outputs=completed_runs,
+            concurrency_limit=1,
+            concurrency_id='experiment_files',
+        )
+        load_run_button.click(
+            load_completed_run,
+            inputs=[config_text, completed_runs],
+            outputs=[
+                status,
+                best_conditions,
+                all_rankings,
+                target_label_metrics,
+                fairness_metrics,
+                audit_group_metrics,
+                confusion_matrix,
+                predictions,
+                source_counts,
+                run_counts,
+                plot_gallery,
+            ],
+            concurrency_limit=1,
+            concurrency_id='experiment_files',
+        )
+        app.load(
+            refresh_completed_runs,
+            inputs=config_text,
+            outputs=completed_runs,
+            concurrency_limit=1,
+            concurrency_id='experiment_files',
         )
     return app
 

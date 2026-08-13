@@ -122,7 +122,14 @@ def _predict_labels_for_condition(
     training_filter = semantic_resource['training_filter']
 
     rows: list[dict[str, Any]] = []
-    for query_index, query in enumerate(evaluation_rows):
+    query_progress_bar = tqdm(
+        evaluation_rows,
+        desc=f'Predicting {context.evaluation_split} rows',
+        unit='row',
+        position=2,
+        leave=False,
+    )
+    for query_index, query in enumerate(query_progress_bar):
         query_vector = query_vectors[query_index]
         retrieval_key = (retrieval_method, embedding_model_id, query[dataset.Column.ID])
 

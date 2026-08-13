@@ -2,7 +2,7 @@ import gc
 import random
 import warnings
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
@@ -616,7 +616,7 @@ def _apply_chat_template(messages: list[dict[str, str]], tokenizer: PreTrainedTo
         enable_thinking=False,
     )
 
-    if not isinstance(encoded, dict):
+    if not isinstance(encoded, Mapping):
         raise TypeError('The chat template must return a token dict')
 
     input_ids = encoded['input_ids']

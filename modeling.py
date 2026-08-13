@@ -717,16 +717,17 @@ def score_allowed_labels(
     if reference_prompt_ids is None:
         raise RuntimeError('The chat template produced no reference prompt')
 
-    prompt_input_ids = reference_prompt_ids.unsqueeze(0).to(device)
     text_config = getattr(language_model.config, 'text_config', language_model.config)
-    return_shared_kv_states = getattr(text_config, 'num_kv_shared_layers', 0) > 0
+    if getattr(text_config, 'num_kv_shared_layers', 0) > 0:
+        raise RuntimeError('Inference-cache reuse does not support language models with shared KV layers')
+
+    prompt_input_ids = reference_prompt_ids.unsqueeze(0).to(device)
 
     with torch.inference_mode():
         prompt_output = language_model(
             input_ids=prompt_input_ids,
             use_cache=True,
             logits_to_keep=1,
-            **({'return_shared_kv_states': True} if return_shared_kv_states else {}),
         )
         if prompt_output.logits.shape[:2] != (1, 1):
             raise RuntimeError(
@@ -737,9 +738,6 @@ def score_allowed_labels(
             raise RuntimeError('The language model did not return an inference cache for the common prompt')
 
         first_token_log_probabilities = torch.log_softmax(prompt_output.logits[0, 0].float(), dim=-1)
-        prompt_shared_kv_states = getattr(prompt_output, 'shared_kv_states', None)
-        if return_shared_kv_states and prompt_shared_kv_states is None:
-            raise RuntimeError('The language model did not return its required shared KV states')
 
         scores: dict[str, float] = {}
         for label in allowed_labels:
@@ -748,9 +746,7 @@ def score_allowed_labels(
             selected_token_log_probabilities = first_token_log_probabilities[candidate_on_device[0]].unsqueeze(0)
 
             if candidate_ids.numel() > 1:
-                candidate_cache, candidate_shared_kv_states = copy.deepcopy(
-                    (prompt_output.past_key_values, prompt_shared_kv_states)
-                )
+                candidate_cache = copy.deepcopy(prompt_output.past_key_values)
                 continuation_ids = candidate_on_device[:-1].unsqueeze(0)
                 attention_mask = torch.ones(
                     (1, reference_prompt_ids.numel() + continuation_ids.shape[1]),
@@ -763,11 +759,6 @@ def score_allowed_labels(
                     past_key_values=candidate_cache,
                     use_cache=False,
                     logits_to_keep=continuation_ids.shape[1],
-                    **(
-                        {'shared_kv_states': candidate_shared_kv_states}
-                        if candidate_shared_kv_states is not None
-                        else {}
-                    ),
                 )
                 continuation_logits = continuation_output.logits[0]
 
@@ -784,7 +775,7 @@ def score_allowed_labels(
                     selected_continuation_log_probabilities,
                 ))
 
-                del continuation_output, candidate_cache, candidate_shared_kv_states
+                del continuation_output, candidate_cache
 
             score = selected_token_log_probabilities.mean().item()
 

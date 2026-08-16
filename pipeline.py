@@ -33,6 +33,7 @@ class PredictionContext:
     target: dataset.Column
     audit_column: dataset.Column
     target_labels: list[str]
+    prediction_method: str
     max_example_count: int
     device: str
     semantic_resources: dict[str, modeling.SemanticResource]
@@ -211,13 +212,34 @@ def _predict_labels_for_condition(
             context.target_labels,
             condition['master_prompt'],
         )
-        predicted_label, label_scores = modeling.score_allowed_labels(
-            messages,
-            context.target_labels,
-            tokenizer,
-            language_model,
-            context.device,
-        )
+        if context.prediction_method == 'generated_output':
+            try:
+                predicted_label, model_output = modeling.generate_allowed_label(
+                    messages,
+                    context.target_labels,
+                    tokenizer,
+                    language_model,
+                    context.device,
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f'Generated-output prediction failed for language model '
+                    f'{condition['language_model']!r}, condition {condition['condition']!r}, '
+                    f'query {query[dataset.Column.ID]!r}: {exc}'
+                ) from exc
+            label_scores_text = NOT_APPLICABLE
+        elif context.prediction_method == 'log_probability':
+            predicted_label, label_scores = modeling.score_allowed_labels(
+                messages,
+                context.target_labels,
+                tokenizer,
+                language_model,
+                context.device,
+            )
+            model_output = NOT_APPLICABLE
+            label_scores_text = json.dumps(label_scores, sort_keys=True)
+        else:
+            raise RuntimeError(f'Prediction method {context.prediction_method!r} is allowed but not implemented')
 
         condition_metadata = {
             'condition': condition['condition'],
@@ -230,6 +252,7 @@ def _predict_labels_for_condition(
             'prompt_name': condition['prompt_name'],
             'master_prompt': condition['master_prompt'],
             'language_model': condition['language_model'],
+            'prediction_method': context.prediction_method,
             'device': context.device,
             'example_order_seed': context.example_order_seed,
             'dataset_shuffle_seed': context.dataset_shuffle_seed,
@@ -244,7 +267,8 @@ def _predict_labels_for_condition(
             'audit_group': query[context.audit_column],
             'predicted_label': predicted_label,
             'prompt': json.dumps(messages, ensure_ascii=False),
-            'label_scores': json.dumps(label_scores, sort_keys=True),
+            'model_output': model_output,
+            'label_scores': label_scores_text,
         }
         example_metadata = {
             'examples_used': len(examples),
@@ -376,6 +400,7 @@ def run_experiment(
     inference_settings = config['inference']
     language_models_config = inference_settings['language_models']
     progress(f'Holding out {target}; language model input is hard_text + {audit_column}')
+    progress(f'Prediction method: {inference_settings['prediction_method']}')
 
     source_rows = dataset.load_source_rows(config, root)
     source_splits = dataset.select_profession_splits(config, source_rows)
@@ -492,6 +517,7 @@ def run_experiment(
                     target=target,
                     audit_column=audit_column,
                     target_labels=target_labels,
+                    prediction_method=inference_settings['prediction_method'],
                     max_example_count=max_example_count,
                     device=device,
                     semantic_resources=semantic_resources,

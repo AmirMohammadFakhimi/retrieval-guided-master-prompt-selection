@@ -18,6 +18,7 @@ CONDITION_COLUMNS = [
     'example_order',
     'prompt_name',
     'language_model',
+    'prediction_method',
 ]
 
 ACCURACY_METRIC_COLUMN = (
@@ -566,7 +567,8 @@ def write_best_prompts(
             f'Embedding model: {best['embedding_model']}\n'
             f'Examples: {best['example_count']}\n'
             f'Example order: {best['example_order']}\n'
-            f'Prompt name: {best['prompt_name']}\n\n'
+            f'Prompt name: {best['prompt_name']}\n'
+            f'Prediction method: {best['prediction_method']}\n\n'
             f'{resolved_prompt}'
         )
 

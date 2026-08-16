@@ -13,21 +13,28 @@ runs with the same prompt candidates and separate winners.
 
 The pipeline uses Hugging Face Transformers directly and loads language models
 one at a time. Qwen thinking is disabled by the native chat-template argument
-used for all configured language models. GPT-OSS is intentionally excluded:
-its mandatory reasoning/Harmony protocol does not match direct final-label
-likelihood scoring without adding a language-model-specific reasoning setting.
+used for all configured language models.
 
 The checked-in device is `mps`, so a missing Apple-GPU runtime raises instead
 of silently running these large language models on CPU.
 
-For every allowed label, the pipeline computes its mean conditional token
-log-probability and chooses the largest score. These are relative label scores,
-not calibrated probabilities.
+`inference.prediction_method` selects exactly one prediction method for a run:
 
-Ollama and LM Studio are good local generation servers, but their normal APIs
-do not provide arbitrary teacher-forced candidate likelihoods. Using structured
-output through either server would be a different method: constrained
-generation instead of the current label scorer.
+- `generated_output` renders the chat for an assistant response and generates
+  up to 32 new tokens with deterministic greedy decoding (`do_sample=False`).
+  Each configured master prompt contains its complete wording, including the
+  allowed labels and exact-output instruction; the code only substitutes its
+  placeholders. After surrounding whitespace is removed and the response is
+  converted to lowercase, any output that is not exactly one allowed label stops
+  the run with the raw response; there is no extraction or retry.
+- `log_probability` computes each allowed label's mean conditional token
+  log-probability and chooses the largest score. These are relative label scores,
+  not calibrated probabilities.
+
+The checked-in configuration uses `generated_output`. It does not sample and
+does not use temperature. These two methods are different experimental methods,
+so switch them only between deliberate runs rather than treating them as prompt
+conditions.
 
 ## Structure
 
@@ -35,7 +42,7 @@ generation instead of the current label scorer.
 - `pipeline.py`: experiment orchestration and artifact writing;
 - `dataset.py`: source loading/normalization, current-run row selection, and
   dataset-composition counting;
-- `modeling.py`: retrieval, prompt construction, and language model scoring;
+- `modeling.py`: retrieval, prompt construction, and language model prediction;
 - `evaluation.py`: metrics, ranking, and selected-prompt reporting;
 - `plotting.py`: current-split condition comparisons and metric diagnostics;
 - `app.py`: teaching-oriented YAML editor with separate ranking, metric,
@@ -163,7 +170,8 @@ to embedding, prediction, metric calculation, ranking, or plotting.
 Important outputs in each timestamped result folder:
 
 - `<split>_results.csv`: every ranked condition and one `is_best` row per language model;
-- `<split>_predictions.csv`: prompts, retrieved-example metadata, seeds, label scores, and labels;
+- `<split>_predictions.csv`: prompts, retrieved-example metadata, seeds,
+  prediction method, generated model output or label scores, and labels;
 - `<split>_best_prompts.txt`: the selected prompt for each language model;
 - `<split>_source_dataset_counts.csv`: all filtered train, validation, and test
   source composition;

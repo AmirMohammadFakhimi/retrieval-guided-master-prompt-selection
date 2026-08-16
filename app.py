@@ -129,6 +129,11 @@ def _present_output(
         'true_label',
         'audit_group',
         'predicted_label',
+        *[
+            column
+            for column in ('prediction_method', 'model_output', 'label_scores')
+            if column in output['predictions'].columns
+        ],
         'condition',
         'retrieval_method',
         'embedding_model',
@@ -136,7 +141,6 @@ def _present_output(
         'example_count',
         'example_order',
         'prompt_name',
-        'label_scores',
     ]
     selected_predictions = output['predictions'].loc[
         output['predictions']['condition'].isin(selected['condition']),
@@ -323,6 +327,9 @@ the edited YAML, so discard the incomplete run before changing experiment settin
   `not_applicable`; positive counts use the retrieval cross-product.
 - Embedding dtype: `float32`, `float16`, or `bfloat16`; language-model dtype may
   additionally be `auto`. Device: `auto`, `cuda`, `mps`, or `cpu`.
+- `inference.prediction_method`: `generated_output` uses deterministic free
+  generation and lowercase exact-label validation; `log_probability`
+  compares the mean conditional token log-probabilities of the allowed labels.
 - Prompt templates support exactly `{target}`, `{audit_column}`, and `{labels}`.
 - `ranking_metric` must name a numeric results column or a documented alias;
   choose `maximize` for quality/ratios and `minimize` for error/differences.
@@ -344,11 +351,18 @@ currently feasible rows while balancing profession, gender, and their joint
 cells. After the requested example-count prefix is selected, the similarity
 orders sort that fixed set by retrieval score for prompt presentation; this
 keeps balanced prefixes independent from presentation order. The language
-model receives the master prompt and allowed-label instruction, zero or more
-retrieved user/assistant demonstrations, then the evaluation biography. At
-zero examples, the message list contains only the system instruction and
-evaluation biography. It chooses the allowed label with the largest mean
-conditional token log-probability:
+model receives the complete configured master prompt, zero or more retrieved
+user/assistant demonstrations, then the evaluation biography. The code only
+substitutes the prompt placeholders; it does not append prompt wording. At zero
+examples, the message list contains only the system instruction and evaluation
+biography. The checked-in templates list the allowed labels and request exactly
+one value.
+
+With `prediction_method: generated_output`, generation is greedy
+(`do_sample=False`), uses no temperature, allows up to 32 new tokens, and is
+accepted only when its trimmed and lowercased text exactly matches one allowed
+label. With `prediction_method: log_probability`, the selected label has the
+largest mean conditional token log-probability:
 
 $$
 score(c)=\frac{1}{|T_c|}\sum_j\log P(t_j\mid prompt,t_{1:j-1}),\qquad

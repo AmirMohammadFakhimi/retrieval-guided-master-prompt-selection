@@ -16,6 +16,7 @@ from tqdm.auto import tqdm
 from transformers import (
     AutoModelForCausalLM as AutoCausalLanguageModel,
     AutoTokenizer,
+    BatchEncoding,
     PreTrainedModel,
     PreTrainedTokenizerBase,
 )
@@ -39,6 +40,7 @@ TORCH_DTYPES = {
     'bfloat16': torch.bfloat16,
 }
 LANGUAGE_MODEL_DTYPES = frozenset({*TORCH_DTYPES, 'auto'})
+GENERATED_OUTPUT_MAX_NEW_TOKENS = 32
 UNBOUNDED_TOKENIZER_LENGTH = 1_000_000_000
 
 
@@ -571,14 +573,8 @@ def build_prompt(
     except KeyError as exc:
         raise ValueError('Prompt templates may use only {target}, {audit_column}, and {labels}') from exc
 
-    instruction_block = (
-        f'{instruction}\n'
-        f'Allowed values for {target_name}: {target_labels_text}.\n'
-        'Output exactly one allowed value and no explanation.'
-    )
-
     messages = [
-        {'role': 'system', 'content': instruction_block}
+        {'role': 'system', 'content': instruction}
     ]
     for example in examples:
         messages.extend([
@@ -640,23 +636,13 @@ def _apply_chat_template(messages: list[dict[str, str]], tokenizer: PreTrainedTo
     return input_ids[0]
 
 
-def score_allowed_labels(
+def _prepare_allowed_label_token_ids(
         messages: list[dict[str, str]],
         allowed_labels: list[str],
         tokenizer: PreTrainedTokenizerBase,
         language_model: PreTrainedModel,
-        device: str,
-) -> tuple[str, dict[str, float]]:
-    """Choose among allowed labels using mean conditional token log-probability.
-
-    Each label is rendered as the final assistant message. Comparing that
-    rendering with an empty assistant message isolates the exact
-    language-model-specific assistant prefix, label tokens, and end markers.
-    Mean rather than summed log-probability reduces the automatic disadvantage
-    of labels that use more tokenizer tokens. The common prompt is evaluated
-    once, then its inference cache is copied for each multi-token label so only
-    that label's remaining tokens require additional model work.
-    """
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Return the common assistant prefix and exact content tokens for every label."""
 
     if not allowed_labels:
         raise ValueError('At least one allowed label is required')
@@ -727,6 +713,95 @@ def score_allowed_labels(
 
     if reference_prompt_ids is None:
         raise RuntimeError('The chat template produced no reference prompt')
+
+    return reference_prompt_ids, candidate_ids_by_label
+
+
+def generate_allowed_label(
+        messages: list[dict[str, str]],
+        allowed_labels: list[str],
+        tokenizer: PreTrainedTokenizerBase,
+        language_model: PreTrainedModel,
+        device: str,
+) -> tuple[str, str]:
+    """Generate one assistant response and accept only an exact configured label."""
+
+    if not allowed_labels:
+        raise ValueError('At least one allowed label is required')
+    if not getattr(tokenizer, 'chat_template', None):
+        raise ValueError(f'{tokenizer.name_or_path} must provide a chat template for this experiment')
+
+    model_inputs = cast(
+        BatchEncoding,
+        tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            return_dict=True,
+            return_tensors='pt',
+            add_generation_prompt=True,
+            enable_thinking=False,
+        ),
+    ).to(device)
+    prompt_length = model_inputs['input_ids'].shape[1]
+
+    context_length = _language_model_context_length(tokenizer, language_model)
+    generated_sequence_length = prompt_length + GENERATED_OUTPUT_MAX_NEW_TOKENS
+
+    if generated_sequence_length > context_length:
+        raise ValueError(
+            f'The formatted prompt plus {GENERATED_OUTPUT_MAX_NEW_TOKENS} generated tokens contains '
+            f'{generated_sequence_length} tokens, exceeding {tokenizer.name_or_path}\'s '
+            f'{context_length}-token context limit. Shorten the prompt or reduce retrieval.example_counts.'
+        )
+
+    with torch.inference_mode():
+        generated_ids = language_model.generate(
+            **model_inputs,
+            do_sample=False,
+            max_new_tokens=GENERATED_OUTPUT_MAX_NEW_TOKENS,
+            return_dict_in_generate=False,
+        )
+
+    new_token_ids = generated_ids[0, prompt_length:]
+    raw_output = cast(
+        str,
+        tokenizer.decode(new_token_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False),
+    )
+
+    predicted_label = raw_output.strip().lower()
+    if predicted_label not in allowed_labels:
+        raise ValueError(
+            f'Language model generated {raw_output!r}; expected exactly one of {allowed_labels!r} '
+            f'after trimming surrounding whitespace and converting to lowercase'
+        )
+
+    return predicted_label, raw_output
+
+
+def score_allowed_labels(
+        messages: list[dict[str, str]],
+        allowed_labels: list[str],
+        tokenizer: PreTrainedTokenizerBase,
+        language_model: PreTrainedModel,
+        device: str,
+) -> tuple[str, dict[str, float]]:
+    """Choose among allowed labels using mean conditional token log-probability.
+
+    Each label is rendered as the final assistant message. Comparing that
+    rendering with an empty assistant message isolates the exact
+    language-model-specific assistant prefix, label tokens, and end markers.
+    Mean rather than summed log-probability reduces the automatic disadvantage
+    of labels that use more tokenizer tokens. The common prompt is evaluated
+    once, then its inference cache is copied for each multi-token label so only
+    that label's remaining tokens require additional model work.
+    """
+
+    reference_prompt_ids, candidate_ids_by_label = _prepare_allowed_label_token_ids(
+        messages,
+        allowed_labels,
+        tokenizer,
+        language_model,
+    )
 
     text_config = getattr(language_model.config, 'text_config', language_model.config)
     if getattr(text_config, 'num_kv_shared_layers', 0) > 0:

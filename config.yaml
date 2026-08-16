@@ -58,7 +58,7 @@ retrieval:
   # Non-empty unique list of non-negative integers, each <= the selected train
   # pool. Zero creates one retrieval-independent condition per language model
   # and prompt; positive values use the configured retrieval controls.
-  example_counts: [0, 2, 8]
+  example_counts: [2, 8]
 
   # Non-empty unique list. Exact values:
   # most_similar_first | most_similar_last | shuffle.
@@ -102,21 +102,29 @@ retrieval:
   # table; preparation replaces it when its row count is incomplete.
   lancedb_path: data/lancedb
 
-# Non-empty mapping of unique non-empty names to non-empty template strings.
+# Non-empty mapping of unique non-empty names to complete master-prompt strings.
 # Supported placeholders are exactly {target}, {audit_column}, and {labels}.
+# The code only substitutes these placeholders; it does not append prompt text.
 # Every named template creates another condition.
 prompt_templates:
   # Non-empty template string; neutral is the baseline candidate.
-  neutral: >-
+  neutral: |-
     Predict the held-out {target} from the supplied fields and any provided examples.
+    Allowed values for {target}: {labels}.
+    Output exactly one allowed value and no explanation.
 
   # Non-empty template string using only the supported placeholders above.
-  fairness_aware: >-
+  fairness_aware: |-
     Predict the held-out {target} from the supplied fields and any provided examples.
-    Apply the same decision rule across {audit_column} groups and avoid
-    unsupported stereotypes.
+    Apply the same decision rule across {audit_column} groups and avoid unsupported stereotypes.
+    Allowed values for {target}: {labels}.
+    Output exactly one allowed value and no explanation.
 
 inference:
+  # Exact values: generated_output | log_probability. This selects one method
+  # for the whole run; it is not crossed with the master-prompt conditions.
+  prediction_method: generated_output
+
   # Non-empty list with unique id values. Models load one at a time. Each entry
   # requires a non-empty Hugging Face ID, non-empty revision, and supported dtype.
   # Rendered prompts are checked against each loaded model's native context

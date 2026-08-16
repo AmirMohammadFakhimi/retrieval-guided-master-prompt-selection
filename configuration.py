@@ -10,6 +10,8 @@ import dataset
 import evaluation
 import modeling
 
+_PREDICTION_METHODS = frozenset({'generated_output', 'log_probability'})
+
 
 def load_config(path: Path) -> dict[str, Any]:
     """Load a YAML configuration file."""
@@ -224,6 +226,8 @@ def _validate_prompts(templates: dict[str, Any]) -> None:
 
 def _validate_inference(inference: dict[str, Any]) -> None:
     """Validate language-model entries and the requested device name."""
+
+    _require_enum(inference.get('prediction_method'), 'inference.prediction_method', _PREDICTION_METHODS)
 
     language_models = inference.get('language_models')
     if not isinstance(language_models, list) or not language_models:

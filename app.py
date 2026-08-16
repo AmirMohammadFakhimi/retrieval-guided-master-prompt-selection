@@ -282,12 +282,14 @@ counts never sends it to an encoder or language model.
         with gr.Accordion('1. Experiment flow and split contract', open=True):
             gr.Markdown(
                 """
-1. Explicitly prepare reusable embeddings for every canonical training row.
+1. If any positive example count is configured, explicitly prepare reusable
+   embeddings for every canonical training row; all-zero runs skip this step.
 2. Load profession-filtered `train`, `validation` (source `dev`), and `test`
    rows, then cap the retrieval training pool.
-3. Filter the complete vector table to that pool and balance only the evaluation
-   split by profession and gender.
-4. If a model CSV is missing, embed only the selected evaluation rows.
+3. For positive counts, filter the complete vector table to that pool and
+   balance only the evaluation split by profession and gender.
+4. If a model CSV is missing, embed selected evaluation rows only when positive
+   counts need retrieval.
 5. Load each missing language model once, predict every condition, then
    atomically save its raw predictions under `<output_dir>/incomplete_run/`.
 6. For each completed or resumed model, calculate and rank every condition and
@@ -315,18 +317,22 @@ the edited YAML, so discard the incomplete run before changing experiment settin
   resolved integer. Evaluation rows equal **profession count × 2 genders × the
   resolved value**.
 - Retrieval methods: `semantic`, `balanced_semantic`. Example order:
-  `as_retrieved`, `reverse`, or `shuffle`.
+  `most_similar_first`, `most_similar_last`, or `shuffle`.
+- `example_counts`: unique non-negative integers. Zero creates one condition
+  per language model and prompt with retrieval controls set to
+  `not_applicable`; positive counts use the retrieval cross-product.
 - Embedding dtype: `float32`, `float16`, or `bfloat16`; language-model dtype may
   additionally be `auto`. Device: `auto`, `cuda`, `mps`, or `cpu`.
 - Prompt templates support exactly `{target}`, `{audit_column}`, and `{labels}`.
 - `ranking_metric` must name a numeric results column or a documented alias;
   choose `maximize` for quality/ratios and `minimize` for error/differences.
 
-Condition count per language model is retrieval methods × embedding models ×
-example counts × example orders × prompt templates. Total prediction calls
-also multiply by selected evaluation rows. Language-model context overflows
-fail explicitly; embedding inputs exceeding their configured sequence limit
-are reported and truncated by the encoder.
+For **P** prompt templates, **R** retrieval methods, **E** embedding models,
+**O** example orders, and **K+** positive example counts, conditions per
+language model equal **P × (zero configured + R × E × O × K+)**. Total
+prediction calls also multiply by selected evaluation rows. Language-model
+context overflows fail explicitly; embedding inputs exceeding their configured
+sequence limit are reported and truncated by the encoder.
 """
             )
 
@@ -335,10 +341,14 @@ are reported and truncated by the encoder.
                 r"""
 `semantic` uses the nearest biographies. `balanced_semantic` takes the nearest
 currently feasible rows while balancing profession, gender, and their joint
-cells. The language model receives the master prompt and allowed-label
-instruction, retrieved user/assistant demonstrations, then the evaluation
-biography. It chooses the allowed label with the largest mean conditional token
-log-probability:
+cells. After the requested example-count prefix is selected, the similarity
+orders sort that fixed set by retrieval score for prompt presentation; this
+keeps balanced prefixes independent from presentation order. The language
+model receives the master prompt and allowed-label instruction, zero or more
+retrieved user/assistant demonstrations, then the evaluation biography. At
+zero examples, the message list contains only the system instruction and
+evaluation biography. It chooses the allowed label with the largest mean
+conditional token log-probability:
 
 $$
 score(c)=\frac{1}{|T_c|}\sum_j\log P(t_j\mid prompt,t_{1:j-1}),\qquad

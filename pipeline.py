@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import yaml
@@ -20,6 +20,7 @@ import plotting
 
 RetrievalCache = dict[tuple[str, str, str], list[dict[str, Any]]]
 INCOMPLETE_RUN_DIRECTORY = 'incomplete_run'
+NOT_APPLICABLE = 'not_applicable'
 
 
 @dataclass
@@ -71,43 +72,54 @@ def _write_language_model_checkpoint(path: Path, predictions: pd.DataFrame) -> N
     temporary_path.replace(path)
 
 
-def _build_conditions(
+def _build_experiment_conditions(
         target: dataset.Column,
-        methods: list[str],
+        retrieval_methods: list[str],
         embedding_models: list[dict[str, Any]],
         language_model_configs: list[dict[str, Any]],
         example_counts: list[int],
         example_orders: list[str],
         prompt_templates: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Build the full cross-product of configured experiment conditions."""
+    """Build zero-shot conditions once and cross positive counts with retrieval controls."""
 
-    conditions: list[dict[str, Any]] = []
+    experiment_conditions: list[dict[str, Any]] = []
+    example_configurations: list[tuple[str, str, int, str]] = []
+    if 0 in example_counts:
+        example_configurations.append((NOT_APPLICABLE, NOT_APPLICABLE, 0, NOT_APPLICABLE))
+
+    example_configurations.extend(
+        (retrieval_method, embedding_model['id'], example_count, example_order)
+        for retrieval_method in retrieval_methods
+        for embedding_model in embedding_models
+        for example_count in example_counts
+        if example_count > 0
+        for example_order in example_orders
+    )
+
     for language_model_config in language_model_configs:
         language_model_id = language_model_config['id']
-        for method in methods:
-            for embedding_model in embedding_models:
-                embedding_model_id = embedding_model['id']
-                for example_count in example_counts:
-                    for example_order in example_orders:
-                        for prompt_name, master_prompt in prompt_templates.items():
-                            condition_name = (
-                                f'{target} | language_model={language_model_id} | '
-                                f'{method} | embedding={embedding_model_id} | '
-                                f'examples={example_count} | {example_order} | {prompt_name}'
-                            )
 
-                            conditions.append({
-                                'condition': condition_name,
-                                'language_model': language_model_id,
-                                'retrieval_method': method,
-                                'embedding_model': embedding_model_id,
-                                'example_count': example_count,
-                                'example_order': example_order,
-                                'prompt_name': prompt_name,
-                                'master_prompt': master_prompt,
-                            })
-    return conditions
+        for retrieval_method, embedding_model_id, example_count, example_order in example_configurations:
+            for prompt_name, master_prompt in prompt_templates.items():
+                condition_name = (
+                    f'{target} | language_model={language_model_id} | '
+                    f'{retrieval_method} | embedding={embedding_model_id} | '
+                    f'examples={example_count} | {example_order} | {prompt_name}'
+                )
+
+                experiment_conditions.append({
+                    'condition': condition_name,
+                    'language_model': language_model_id,
+                    'retrieval_method': retrieval_method,
+                    'embedding_model': embedding_model_id,
+                    'example_count': example_count,
+                    'example_order': example_order,
+                    'prompt_name': prompt_name,
+                    'master_prompt': master_prompt,
+                })
+
+    return experiment_conditions
 
 
 def _prepare_semantic_resources(
@@ -150,10 +162,12 @@ def _predict_labels_for_condition(
 
     retrieval_method = condition['retrieval_method']
     embedding_model_id = condition['embedding_model']
-    semantic_resource = context.semantic_resources[embedding_model_id]
-    semantic_table = semantic_resource['table']
-    query_vectors = semantic_resource['evaluation_vectors']
-    training_filter = semantic_resource['training_filter']
+    example_count = condition['example_count']
+    if example_count > 0:
+        semantic_resource = context.semantic_resources[embedding_model_id]
+        semantic_table = semantic_resource['table']
+        query_vectors = semantic_resource['evaluation_vectors']
+        training_filter = semantic_resource['training_filter']
 
     rows: list[dict[str, Any]] = []
     query_progress_bar = tqdm(
@@ -164,25 +178,31 @@ def _predict_labels_for_condition(
         leave=False,
     )
     for query_index, query in enumerate(query_progress_bar):
-        query_vector = query_vectors[query_index]
-        retrieval_key = (retrieval_method, embedding_model_id, query[dataset.Column.ID])
+        if example_count == 0:
+            examples = []
+        else:
+            query_vector = query_vectors[query_index]
+            retrieval_key = (retrieval_method, embedding_model_id, query[dataset.Column.ID])
 
-        if retrieval_key not in context.retrieval_cache:
-            context.retrieval_cache[retrieval_key] = modeling.retrieve_examples(
-                retrieval_method,
-                query_vector,
-                semantic_table,
-                training_filter,
-                context.max_example_count,
-                context.training_profession_gender_pairs,
+            if retrieval_key not in context.retrieval_cache:
+                context.retrieval_cache[retrieval_key] = modeling.retrieve_examples(
+                    retrieval_method,
+                    query_vector,
+                    semantic_table,
+                    training_filter,
+                    context.max_example_count,
+                    context.training_profession_gender_pairs,
+                )
+
+            # Balanced retrieval order preserves balanced prefixes. Slice the
+            # requested set before applying its independent prompt-presentation
+            # order so smaller example counts keep those balanced memberships.
+            examples = context.retrieval_cache[retrieval_key][:example_count]
+            examples = modeling.order_examples(
+                examples,
+                condition['example_order'],
+                context.example_order_seed,
             )
-
-        examples = context.retrieval_cache[retrieval_key][:condition['example_count']]
-        examples = modeling.order_examples(
-            examples,
-            condition['example_order'],
-            context.example_order_seed,
-        )
 
         messages = modeling.build_prompt(
             query,
@@ -205,7 +225,7 @@ def _predict_labels_for_condition(
             'audit_column': context.audit_column,
             'retrieval_method': retrieval_method,
             'embedding_model': embedding_model_id,
-            'example_count': condition['example_count'],
+            'example_count': example_count,
             'example_order': condition['example_order'],
             'prompt_name': condition['prompt_name'],
             'master_prompt': condition['master_prompt'],
@@ -383,7 +403,7 @@ def run_experiment(
     example_orders = config['retrieval']['example_orders']
     prompt_templates = config['prompt_templates']
 
-    conditions = _build_conditions(
+    experiment_conditions = _build_experiment_conditions(
         target,
         retrieval_methods,
         embedding_models,
@@ -411,9 +431,9 @@ def run_experiment(
     )
     for language_model_config in language_model_progress_bar:
         language_model_id = language_model_config['id']
-        conditions_for_language_model = [
+        language_model_conditions = [
             condition
-            for condition in conditions
+            for condition in experiment_conditions
             if condition['language_model'] == language_model_id
         ]
         checkpoint_path = _language_model_checkpoint_path(checkpoint_dir, language_model_id)
@@ -426,39 +446,45 @@ def run_experiment(
             if prediction_context is None:
                 device = modeling.choose_device(inference_settings['device'])
                 progress(f'Using device: {device}')
-                complete_training_rows = [
-                    row for row in source_rows if row[dataset.Column.SPLIT] == 'train'
-                ]
-                database_path = root / config['retrieval']['lancedb_path']
-                cached_tables = {
-                    embedding_model['id']: modeling.open_training_embedding_cache(
-                        complete_training_rows,
-                        embedding_model,
-                        database_path,
-                    )
-                    for embedding_model in embedding_models
-                }
+                max_example_count = int(max(example_counts))
 
-                training_filter = modeling.build_training_filter(train, dataset.train_size_limit(config))
-                for embedding_model_id, table in cached_tables.items():
-                    filtered_row_count = table.count_rows(training_filter)
-                    if filtered_row_count != len(train):
-                        raise RuntimeError(
-                            f'{embedding_model_id} training filter selected '
-                            f'{filtered_row_count} cached rows; expected the configured '
-                            f'training pool size {len(train)}'
+                if max_example_count > 0:
+                    complete_training_rows = [row for row in source_rows if row[dataset.Column.SPLIT] == 'train']
+                    database_path = root / config['retrieval']['lancedb_path']
+                    cached_tables = {
+                        embedding_model['id']: modeling.open_training_embedding_cache(
+                            complete_training_rows,
+                            embedding_model,
+                            database_path,
                         )
+                        for embedding_model in embedding_models
+                    }
 
-                semantic_resources = _prepare_semantic_resources(
-                    evaluation_rows,
-                    embedding_models,
-                    cached_tables,
-                    training_filter,
-                    device,
-                )
-                training_profession_gender_pairs = tuple(sorted(
-                    {(row[dataset.Column.PROFESSION], row[dataset.Column.GENDER]) for row in train}
-                ))
+                    training_filter = modeling.build_training_filter(train, dataset.train_size_limit(config))
+                    for embedding_model_id, table in cached_tables.items():
+                        filtered_row_count = table.count_rows(training_filter)
+                        if filtered_row_count != len(train):
+                            raise RuntimeError(
+                                f'{embedding_model_id} training filter selected '
+                                f'{filtered_row_count} cached rows; expected the configured '
+                                f'training pool size {len(train)}'
+                            )
+
+                    semantic_resources = _prepare_semantic_resources(
+                        evaluation_rows,
+                        embedding_models,
+                        cached_tables,
+                        training_filter,
+                        device,
+                    )
+                    training_profession_gender_pairs = tuple(sorted(
+                        {(row[dataset.Column.PROFESSION], row[dataset.Column.GENDER]) for row in train}
+                    ))
+                else:
+                    progress('Skipping semantic resources because every example count is zero')
+                    semantic_resources = {}
+                    training_profession_gender_pairs = ()
+
                 prediction_context = PredictionContext(
                     example_order_seed=defaults['seed'],
                     dataset_shuffle_seed=config['dataset']['shuffle_seed'],
@@ -466,13 +492,15 @@ def run_experiment(
                     target=target,
                     audit_column=audit_column,
                     target_labels=target_labels,
-                    max_example_count=max(example_counts),
+                    max_example_count=max_example_count,
                     device=device,
                     semantic_resources=semantic_resources,
                     training_profession_gender_pairs=training_profession_gender_pairs,
                     retrieval_cache={},
                 )
 
+            prediction_context: PredictionContext = cast(PredictionContext, prediction_context)
+            device = prediction_context.device
             tokenizer, language_model = modeling.load_language_model(
                 language_model_id,
                 language_model_config['revision'],
@@ -483,7 +511,7 @@ def run_experiment(
             try:
                 model_condition_prediction_tables: list[pd.DataFrame] = []
                 condition_progress_bar = tqdm(
-                    conditions_for_language_model,
+                    language_model_conditions,
                     desc=f'Evaluating {language_model_id}',
                     unit='condition',
                     position=1,
@@ -511,7 +539,7 @@ def run_experiment(
                 modeling.clear_model_memory(device)
 
         condition_result_tables: list[pd.DataFrame] = []
-        for condition in conditions_for_language_model:
+        for condition in language_model_conditions:
             condition_predictions = model_predictions.loc[
                 model_predictions['condition'].eq(condition['condition'])
             ].copy()

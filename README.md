@@ -67,6 +67,17 @@ the train rows, evaluation rows, and resolved rows per profession-gender cell.
 An explicit positive integer uses that many rows; `max_balanced` resolves to
 the smallest available cell in only `defaults.evaluation_split`.
 
+`semantic` retrieves exact cosine-nearest rows. `balanced_semantic` greedily
+selects the nearest currently feasible rows while balancing profession,
+gender, and their joint cells; its selection sequence intentionally preserves
+balanced prefixes for smaller example counts. Only after the requested prefix
+is sliced, `most_similar_first` or `most_similar_last` stably sorts that fixed
+set by `retrieval_score` for prompt presentation. `shuffle` instead applies the
+configured deterministic example-order seed. An example count of zero creates
+one zero-shot condition per language model and master prompt. It supplies no
+demonstrations and records retrieval method, embedding model, and example order
+as `not_applicable`, because those controls cannot affect zero-shot prediction.
+
 `calculate_dataset_counts(config, split_rows)` is the single composition-count
 implementation. It creates two different views during a run:
 
@@ -75,11 +86,13 @@ implementation. It creates two different views during a run:
 - `run_dataset_counts`: the capped train pool plus only the configured
   evaluation rows, which is authoritative for rows used by the experiment.
 
-An experiment opens the complete tables read-only, filters professions first,
-then applies numeric `train_size` as the first matching rows in the normalized
-dataset's fixed shuffled order. Changing professions, target, prompts, or the
-train cap does not rebuild embeddings. A missing or incomplete cache stops
-the run with an instruction to prepare it explicitly.
+When any positive example count is configured, an experiment opens the complete
+tables read-only, filters professions first, then applies numeric `train_size`
+as the first matching rows in the normalized dataset's fixed shuffled order.
+Changing professions, target, prompts, or the train cap does not rebuild
+embeddings. A missing or incomplete required cache stops the run with an
+instruction to prepare it explicitly. An all-zero run skips table opening and
+evaluation-query embedding entirely.
 
 ## Run
 
@@ -89,10 +102,11 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
-In the app, first select **Prepare all training embeddings**. When a language
-model CSV is missing, **Run configured split** embeds only the selected
-evaluation queries and retrieves exact neighbors from the eligible part of the
-complete table. The notebook exposes the same two explicit calls.
+Before a run containing positive example counts, select **Prepare all training
+embeddings**. When a language model CSV is missing, **Run configured split**
+embeds only the selected evaluation queries and retrieves exact neighbors from
+the eligible part of the complete table. An all-zero run can skip preparation.
+The notebook exposes the same two explicit calls.
 
 During an experiment, each completed language model's raw predictions are saved
 atomically under `<output_dir>/incomplete_run/`. On restart, an existing model
@@ -385,6 +399,9 @@ mathematics is better described as profession-conditioned performance or
 stereotype/association diagnostics. Profession and gender remain separate
 experiments with the same prompt candidates and separate winners.
 
-The checked-in configuration has two retrieval methods, one active embedding
-model, two example counts, three example orders, two master prompts, and four
-language models: 96 conditions per target and configured evaluation split.
+For $P$ master prompts, $R$ retrieval methods, $E$ embedding models, $O$
+example orders, and $K_+$ positive example counts, conditions per language
+model equal $P\left(\mathbf{1}[0\text{ configured}]+R E O K_+\right)$. The
+checked-in configuration therefore has 50 conditions per language model and
+200 total. Its four professions, two genders, and five evaluation rows per
+cell produce 40 evaluation rows and 8,000 row-condition predictions.

@@ -130,7 +130,7 @@ def _validate_retrieval(
     if not isinstance(example_counts, list) or not example_counts:
         raise ValueError('retrieval.example_counts must be a non-empty list')
     for index, value in enumerate(example_counts):
-        _require_integer(value, f'retrieval.example_counts[{index}]', 1)
+        _require_integer(value, f'retrieval.example_counts[{index}]', 0)
     if train_size is not None and max(example_counts) > train_size:
         raise ValueError('Every retrieval.example_counts entry must be <= dataset.train_size')
     if len(example_counts) != len(set(example_counts)):

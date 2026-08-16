@@ -27,7 +27,11 @@ from dataset import (
 )
 
 RETRIEVAL_METHODS = frozenset({'semantic', 'balanced_semantic'})
-EXAMPLE_ORDERS = frozenset({'as_retrieved', 'reverse', 'shuffle'})
+EXAMPLE_ORDERS = frozenset({
+    'most_similar_first',
+    'most_similar_last',
+    'shuffle',
+})
 LANCEDB_INGEST_BATCH_SIZE = 2048
 TORCH_DTYPES = {
     'float32': torch.float32,
@@ -509,16 +513,23 @@ def order_examples(
         order: str,
         seed: int,
 ) -> list[dict[str, Any]]:
-    """Apply the configured demonstration order after retrieval."""
+    """Order one already-selected demonstration set for prompt presentation."""
 
     if order not in EXAMPLE_ORDERS:
         raise ValueError(f'Unknown example order {order!r}; expected one of {sorted(EXAMPLE_ORDERS)}')
 
-    if order == 'as_retrieved':
-        return examples
+    if order == 'most_similar_first':
+        return sorted(
+            examples,
+            key=lambda example: example['retrieval_score'],
+            reverse=True,
+        )
 
-    if order == 'reverse':
-        return examples[::-1]
+    if order == 'most_similar_last':
+        return sorted(
+            examples,
+            key=lambda example: example['retrieval_score'],
+        )
 
     if order == 'shuffle':
         random.Random(seed).shuffle(examples)
@@ -544,7 +555,7 @@ def build_prompt(
         target_labels: list[str],
         master_prompt: str,
 ) -> list[dict[str, str]]:
-    """Build a structured chat with demonstrations and a target-free query."""
+    """Build a structured chat with zero or more demonstrations and a target-free query."""
 
     # Rows contain decoded target-label names, not raw numeric IDs.
     audit_column = TARGET_TO_AUDIT_COLUMN[target]

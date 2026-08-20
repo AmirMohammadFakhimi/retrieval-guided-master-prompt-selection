@@ -1,11 +1,16 @@
 import copy
 import gc
+import hashlib
+import json
+import os
 import random
+import tempfile
 import warnings
+import zipfile
 from collections import Counter
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 
 import lancedb
 import numpy as np
@@ -36,6 +41,9 @@ EXAMPLE_ORDERS = frozenset({
     'shuffle',
 })
 LANCEDB_INGEST_BATCH_SIZE = 2048
+EXACT_RETRIEVAL_QUERY_BATCH_SIZE = 64
+TRAINING_TABLE_VERSION = 1
+QUERY_VECTOR_CACHE_VERSION = 1
 TORCH_DTYPES = {
     'float32': torch.float32,
     'float16': torch.float16,
@@ -44,14 +52,6 @@ TORCH_DTYPES = {
 LANGUAGE_MODEL_DTYPES = frozenset({*TORCH_DTYPES, 'auto'})
 GENERATED_OUTPUT_MAX_NEW_TOKENS = 32
 UNBOUNDED_TOKENIZER_LENGTH = 1_000_000_000
-
-
-class SemanticResource(TypedDict):
-    """LanceDB table and matching evaluation embeddings for one embedding model."""
-
-    table: LanceTable
-    evaluation_vectors: np.ndarray
-    training_filter: str
 
 
 class GeneratedOutputError(ValueError):
@@ -169,36 +169,248 @@ def clear_model_memory(device: str) -> None:
         torch.mps.empty_cache()
 
 
-def prepare_training_embedding_cache(
+def _valid_embedding_vectors(vectors: np.ndarray) -> bool:
+    """Return whether every vector and its norm are finite and nonzero."""
+
+    with np.errstate(over='ignore', invalid='ignore'):
+        norms = np.linalg.norm(vectors, axis=1)
+    return bool(
+        np.isfinite(vectors).all()
+        and np.isfinite(norms).all()
+        and np.all(norms != 0)
+    )
+
+
+def _canonical_json(value: Any) -> str:
+    """Serialize fingerprint inputs independently of dictionary insertion order."""
+
+    return json.dumps(
+        value,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(',', ':'),
+        allow_nan=False,
+    )
+
+
+def _fingerprint(value: Any) -> str:
+    """Return the SHA-256 digest of one canonical JSON value."""
+
+    return hashlib.sha256(_canonical_json(value).encode('utf-8')).hexdigest()
+
+
+def _fingerprint_row_bytes(row: dict[str, Any]) -> bytes:
+    """Encode one source row for ordered content fingerprints."""
+
+    return _canonical_json([
+        row[Column.ID],
+        row[Column.SPLIT],
+        row[Column.HARD_TEXT],
+        row[Column.PROFESSION],
+        row[Column.GENDER],
+        row.get(Column.TRAIN_ORDER),
+    ]).encode('utf-8')
+
+
+def fingerprint_rows(rows: list[dict[str, Any]]) -> str:
+    """Hash canonical row contents in their exact supplied order."""
+
+    digest = hashlib.sha256()
+    digest.update(b'[')
+    for index, row in enumerate(rows):
+        if index:
+            digest.update(b',')
+        digest.update(_fingerprint_row_bytes(row))
+    digest.update(b']')
+    return digest.hexdigest()
+
+
+def _embedding_model_slug(embedding_model_id: str) -> str:
+    """Return one filesystem-safe embedding-model ID."""
+
+    return embedding_model_id.lower().replace('/', '_')
+
+
+def _embedding_fingerprint_settings(embedding_model: dict[str, Any]) -> dict[str, Any]:
+    """Return only settings that can change encoded vector values."""
+
+    return {
+        'model_id': embedding_model['id'],
+        'revision': embedding_model['revision'],
+        'dimension': embedding_model['dimension'],
+        'max_sequence_length': embedding_model['max_sequence_length'],
+        'dtype': embedding_model['dtype'],
+        'normalize_embeddings': True,
+    }
+
+
+def _training_table_manifest(
+        training_rows_digest: str,
+        training_row_count: int,
+        embedding_model: dict[str, Any],
+) -> dict[str, Any]:
+    """Describe every input needed to trust one complete training table."""
+
+    return {
+        'version': TRAINING_TABLE_VERSION,
+        'training_rows_digest': training_rows_digest,
+        'training_row_count': training_row_count,
+        'physical_row_order': 'stable_descending_hard_text_character_length',
+        'embedding': _embedding_fingerprint_settings(embedding_model),
+    }
+
+
+def _query_vector_cache_key(
+        queries: list[dict[str, Any]],
+        embedding_model: dict[str, Any],
+        device: str,
+) -> str:
+    """Identify cached query vectors by exactly the inputs that affect them."""
+
+    return _fingerprint({
+        'version': QUERY_VECTOR_CACHE_VERSION,
+        'queries': [
+            [row[Column.ID], row[Column.HARD_TEXT]]
+            for row in queries
+        ],
+        'query_prompt': embedding_model['query_prompt'],
+        'resolved_device': device,
+        'embedding': _embedding_fingerprint_settings(embedding_model),
+    })
+
+
+def _atomic_write_json(path: Path, value: Any) -> None:
+    """Publish one JSON file without exposing an incomplete destination."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode='w',
+                encoding='utf-8',
+                dir=path.parent,
+                prefix=f'.{path.name}.',
+                suffix='.tmp',
+                delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(value, handle, ensure_ascii=False, sort_keys=True, allow_nan=False)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    except BaseException:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def _atomic_write_npz(path: Path, **arrays: np.ndarray) -> None:
+    """Publish one pickle-free NPZ cache atomically."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode='wb',
+                dir=path.parent,
+                prefix=f'.{path.name}.',
+                suffix='.tmp',
+                delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            np.savez(handle, **arrays)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    except BaseException:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def _load_json(path: Path) -> Any | None:
+    """Return decoded JSON, or None when a file is absent or malformed."""
+
+    try:
+        with path.open(encoding='utf-8') as handle:
+            return json.load(handle)
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return None
+
+
+def _has_matching_manifest(path: Path, expected_manifest: dict[str, Any]) -> bool:
+    """Compare a readable manifest without Python's cross-type numeric equality."""
+
+    try:
+        return _canonical_json(_load_json(path)) == _canonical_json(expected_manifest)
+    except (TypeError, ValueError):
+        return False
+
+
+def _training_manifest_path(database_path: Path, table_name: str) -> Path:
+    """Return the external manifest path for one LanceDB table."""
+
+    return database_path / '_manifests' / f'{table_name}.json'
+
+
+def _valid_training_table_schema(
+        table: LanceTable,
+        embedding_dimension: int,
+        expected_row_count: int,
+) -> bool:
+    """Check the complete table's row count and exact persisted schema."""
+
+    expected_columns = [
+        Column.ID,
+        Column.PROFESSION,
+        Column.GENDER,
+        Column.TRAIN_ORDER,
+        'vector',
+    ]
+    schema = table.schema
+    vector_type = schema.field('vector').type if 'vector' in schema.names else None
+    return (
+        table.count_rows() == expected_row_count
+        and schema.names == expected_columns
+        and getattr(vector_type, 'list_size', None) == embedding_dimension
+        and str(getattr(vector_type, 'value_type', '')) == 'float'
+    )
+
+
+def prepare_training_embedding_table(
         training_rows: list[dict[str, Any]],
         embedding_model: dict[str, Any],
         device: str,
         database_path: Path,
+        training_rows_digest: str,
         progress: Callable[[str], None] = print,
 ) -> LanceTable:
     """Explicitly build or reuse all training embeddings for one model."""
 
     if not training_rows:
-        raise ValueError('Cannot prepare an embedding cache from an empty training corpus')
+        raise ValueError('Cannot prepare an embedding table from an empty training corpus')
 
     embedding_model_id = embedding_model['id']
     embedding_dimension = embedding_model['dimension']
     max_sequence_length = embedding_model['max_sequence_length']
     batch_size = embedding_model['batch_size']
     table_name = _embedding_table_name(embedding_model_id)
+    manifest = _training_table_manifest(training_rows_digest, len(training_rows), embedding_model)
+    manifest_path = _training_manifest_path(database_path, table_name)
 
     database_path.mkdir(parents=True, exist_ok=True)
     database = lancedb.connect(database_path)
     if table_name in database.list_tables().tables:
-        table = database.open_table(table_name)
-        cached_row_count = table.count_rows()
+        table: LanceTable = cast(LanceTable, database.open_table(table_name))
+        table_is_valid = (
+            _has_matching_manifest(manifest_path, manifest)
+            and _valid_training_table_schema(table, embedding_dimension, len(training_rows))
+        )
+        if table_is_valid:
+            progress(f'Reusing {len(training_rows)} manifested training embeddings from {database_path / table_name}')
+            return table
 
-        if cached_row_count == len(training_rows):
-            progress(f'Reusing {cached_row_count} complete training embeddings from {database_path / table_name}')
-            return cast(LanceTable, table)
-
-        progress(f'Replacing incomplete LanceDB table {table_name}: {cached_row_count} of {len(training_rows)} rows')
+        progress(f'Rebuilding incompatible or unmanifested LanceDB table {table_name}')
         database.drop_table(table_name)
+        manifest_path.unlink(missing_ok=True)
 
     length_sorted_training_rows = sorted(
         training_rows,
@@ -206,16 +418,17 @@ def prepare_training_embedding_cache(
         reverse=True,
     )
     progress(f'Embedding all {len(length_sorted_training_rows)} training rows for {embedding_model_id}')
-    encoder = _load_embedding_encoder(embedding_model, device)
-    progress_bar = tqdm(
-        total=len(length_sorted_training_rows),
-        desc='Embedding all training rows for LanceDB',
-        unit='row',
-        leave=True,
-    )
+    encoder: SentenceTransformer | None = None
     table: LanceTable | None = None
 
     try:
+        encoder: SentenceTransformer = _load_embedding_encoder(embedding_model, device)
+        progress_bar = tqdm(
+            total=len(length_sorted_training_rows),
+            desc='Embedding all training rows for LanceDB',
+            unit='row',
+            leave=True,
+        )
         try:
             for start in range(0, len(length_sorted_training_rows), LANCEDB_INGEST_BATCH_SIZE):
                 batch = length_sorted_training_rows[start:start + LANCEDB_INGEST_BATCH_SIZE]
@@ -235,20 +448,21 @@ def prepare_training_embedding_cache(
                         normalize_embeddings=True,
                         convert_to_numpy=True,
                         show_progress_bar=False,
-                    )
+                    ),
+                    dtype=np.float32,
                 )
 
-                if vectors.ndim != 2 or vectors.shape[1] != embedding_dimension:
+                if vectors.ndim != 2 or vectors.shape != (len(batch), embedding_dimension):
                     raise RuntimeError(
                         f'Embedding model returned vectors with shape '
-                        f'{vectors.shape}; expected (*, {embedding_dimension})'
+                        f'{vectors.shape}; expected ({len(batch)}, {embedding_dimension})'
                     )
+                if not _valid_embedding_vectors(vectors):
+                    raise RuntimeError('Embedding model returned a non-finite or zero training vector')
 
                 records = [
                     {
                         Column.ID: row[Column.ID],
-                        Column.SPLIT: row[Column.SPLIT],
-                        Column.HARD_TEXT: row[Column.HARD_TEXT],
                         Column.PROFESSION: row[Column.PROFESSION],
                         Column.GENDER: row[Column.GENDER],
                         Column.TRAIN_ORDER: row[Column.TRAIN_ORDER],
@@ -266,28 +480,41 @@ def prepare_training_embedding_cache(
         except BaseException:
             if table_name in database.list_tables().tables:
                 database.drop_table(table_name)
+            manifest_path.unlink(missing_ok=True)
             raise
         finally:
-            progress_bar.close()
+            if progress_bar is not None:
+                progress_bar.close()
     finally:
-        del encoder
+        if encoder is not None:
+            del encoder
         clear_model_memory(device)
 
     if table is None:
         raise RuntimeError('Cannot build a LanceDB table from an empty training corpus')
+    try:
+        progress(f'Compacting new LanceDB table {table_name}')
+        table.optimize()
+        _atomic_write_json(manifest_path, manifest)
+    except BaseException:
+        if table_name in database.list_tables().tables:
+            database.drop_table(table_name)
+        manifest_path.unlink(missing_ok=True)
+        raise
     return table
 
 
-def open_training_embedding_cache(
+def open_training_embedding_table(
         training_rows: list[dict[str, Any]],
         embedding_model: dict[str, Any],
         database_path: Path,
+        training_rows_digest: str,
 ) -> LanceTable:
     """Open a table only when it contains every canonical training row."""
 
     if not database_path.exists():
         raise RuntimeError(
-            f'Embedding cache for {embedding_model["id"]} is missing. '
+            f'Training-embedding table for {embedding_model["id"]} is missing. '
             f'Run "Prepare all training embeddings" before the experiment.'
         )
 
@@ -295,23 +522,34 @@ def open_training_embedding_cache(
     table_name = _embedding_table_name(embedding_model['id'])
     if table_name not in database.list_tables().tables:
         raise RuntimeError(
-            f'Embedding cache for {embedding_model["id"]} is missing. '
+            f'Training-embedding table for {embedding_model["id"]} is missing. '
             f'Run "Prepare all training embeddings" before the experiment.'
         )
 
-    table = database.open_table(table_name)
-    cached_row_count = table.count_rows()
-    if cached_row_count != len(training_rows):
+    table = cast(LanceTable, database.open_table(table_name))
+    manifest = _training_table_manifest(
+        training_rows_digest,
+        len(training_rows),
+        embedding_model,
+    )
+    manifest_path = _training_manifest_path(database_path, table_name)
+    if (
+            not _has_matching_manifest(manifest_path, manifest)
+            or not _valid_training_table_schema(
+                table,
+                embedding_model['dimension'],
+                len(training_rows),
+            )
+    ):
         raise RuntimeError(
-            f'Embedding cache for {embedding_model["id"]} contains '
-            f'{cached_row_count} of {len(training_rows)} training rows. '
+            f'Training-embedding table for {embedding_model["id"]} is unmanifested or incompatible. '
             f'Run "Prepare all training embeddings" before the experiment.'
         )
 
-    return cast(LanceTable, table)
+    return table
 
 
-def encode_embedding_queries(
+def _encode_embedding_queries(
         queries: list[dict[str, Any]],
         embedding_model: dict[str, Any],
         device: str,
@@ -323,9 +561,10 @@ def encode_embedding_queries(
     max_sequence_length = embedding_model['max_sequence_length']
     batch_size = embedding_model['batch_size']
     query_prompt = embedding_model['query_prompt']
-    encoder = _load_embedding_encoder(embedding_model, device)
+    encoder: SentenceTransformer | None = None
 
     try:
+        encoder: SentenceTransformer = _load_embedding_encoder(embedding_model, device)
         _warn_about_embedding_input_truncation(
             encoder,
             queries,
@@ -345,7 +584,8 @@ def encode_embedding_queries(
             )
         )
     finally:
-        del encoder
+        if encoder is not None:
+            del encoder
         clear_model_memory(device)
 
     if query_vectors.ndim != 2 or query_vectors.shape != (len(queries), embedding_dimension):
@@ -354,7 +594,82 @@ def encode_embedding_queries(
             f'{query_vectors.shape}; expected '
             f'({len(queries)}, {embedding_dimension})'
         )
+    query_vectors = np.ascontiguousarray(query_vectors, dtype=np.float32)
+    if not _valid_embedding_vectors(query_vectors):
+        raise RuntimeError('Embedding model returned a non-finite or zero query vector')
     return query_vectors
+
+
+def _query_vector_cache_path(
+        runtime_cache_path: Path,
+        embedding_model_id: str,
+        cache_key: str,
+) -> Path:
+    """Return the fingerprinted NPZ path for evaluation vectors."""
+
+    return runtime_cache_path / 'query_vectors' / _embedding_model_slug(embedding_model_id) / f'{cache_key}.npz'
+
+
+def _load_query_vector_cache(
+        path: Path,
+        expected_query_ids: list[str],
+        embedding_dimension: int,
+) -> np.ndarray | None:
+    """Load and strictly validate one pickle-free query-vector artifact."""
+
+    try:
+        with path.open('rb') as handle:
+            with np.load(handle, allow_pickle=False) as payload:
+                if set(payload.files) != {'query_ids', 'vectors'}:
+                    return None
+                query_ids = np.asarray(payload['query_ids'])
+                vectors = np.asarray(payload['vectors'])
+    except (OSError, ValueError, TypeError, EOFError, zipfile.BadZipFile):
+        return None
+
+    if (
+            query_ids.ndim != 1
+            or query_ids.dtype.kind not in {'U', 'S'}
+            or [str(query_id) for query_id in query_ids.tolist()] != expected_query_ids
+            or vectors.dtype != np.float32
+            or vectors.shape != (len(expected_query_ids), embedding_dimension)
+            or not vectors.flags.c_contiguous
+    ):
+        return None
+    if not _valid_embedding_vectors(vectors):
+        return None
+    return vectors
+
+
+def load_or_encode_embedding_queries(
+        queries: list[dict[str, Any]],
+        embedding_model: dict[str, Any],
+        device: str,
+        runtime_cache_path: Path,
+) -> np.ndarray:
+    """Reuse or atomically cache all selected evaluation-query vectors."""
+
+    query_ids = [str(row[Column.ID]) for row in queries]
+    if len(query_ids) != len(set(query_ids)):
+        raise ValueError('Evaluation query IDs must be unique')
+
+    query_cache_key = _query_vector_cache_key(queries, embedding_model, device)
+    path = _query_vector_cache_path(runtime_cache_path, embedding_model['id'], query_cache_key)
+    cached_vectors = _load_query_vector_cache(
+        path,
+        query_ids,
+        embedding_model['dimension'],
+    )
+    if cached_vectors is not None:
+        return cached_vectors
+
+    vectors = _encode_embedding_queries(queries, embedding_model, device)
+    _atomic_write_npz(
+        path,
+        query_ids=np.asarray(query_ids, dtype=np.str_),
+        vectors=vectors,
+    )
+    return vectors
 
 
 def build_training_filter(train: list[dict[str, Any]], train_size: int | None) -> str:
@@ -374,52 +689,148 @@ def build_training_filter(train: list[dict[str, Any]], train_size: int | None) -
     return training_filter
 
 
-def _get_semantic_candidate_page(
-        semantic_table: LanceTable,
-        query_vector: np.ndarray,
+def _load_exact_training_matrix(
+        training_table: LanceTable,
         training_filter: str,
-        limit: int,
-        offset: int = 0,
-) -> list[dict[str, Any]]:
-    """Return exact cosine-nearest LanceDB rows in semantic rank order."""
+        training_by_id: dict[str, dict[str, Any]],
+        embedding_dimension: int,
+) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray]:
+    """Scan one filtered table in physical order and validate vector-row alignment."""
 
-    rows = (
-        semantic_table.search(query_vector)
-        .distance_type('cosine')
-        .bypass_vector_index()
-        .where(training_filter, prefilter=True)
-        .select([
-            Column.ID,
-            Column.SPLIT,
-            Column.HARD_TEXT,
-            Column.PROFESSION,
-            Column.GENDER,
-            '_distance',
-        ])
-        .limit(limit)
-        .offset(offset)
-        .to_list()
+    if not training_by_id:
+        raise ValueError('Cannot load an exact retrieval matrix from an empty training pool')
+    if any(str(row[Column.ID]) != row_id for row_id, row in training_by_id.items()):
+        raise ValueError('Training pool lookup keys do not align with row IDs')
+    training_row_count = len(training_by_id)
+
+    scanner = training_table.to_lance().scanner(
+        columns=[
+            Column.ID.value,
+            Column.PROFESSION.value,
+            Column.GENDER.value,
+            Column.TRAIN_ORDER.value,
+            'vector',
+        ],
+        filter=training_filter,
+        scan_in_order=True,
     )
+    vectors = np.empty((training_row_count, embedding_dimension), dtype=np.float32, order='C')
+    ids: list[str] = []
+    professions: list[str] = []
+    genders: list[str] = []
+    train_orders: list[int] = []
+    row_offset = 0
+    for batch in scanner.to_batches():
+        batch_stop = row_offset + batch.num_rows
+        if batch_stop > training_row_count:
+            raise RuntimeError(
+                f'Filtered embedding table contains more than the expected '
+                f'{training_row_count} selected training rows'
+            )
+        vector_array = batch.column(batch.schema.get_field_index('vector'))
+        vector_width = getattr(vector_array.type, 'list_size', None)
+        if vector_width != embedding_dimension:
+            raise RuntimeError(
+                f'Embedding table vector width is {vector_width}; expected {embedding_dimension}'
+            )
+        if vector_array.null_count:
+            raise RuntimeError('Exact training matrix contains null vectors')
+        flat_vectors = vector_array.values.to_numpy(zero_copy_only=True)
+        vectors[row_offset:batch_stop] = flat_vectors.reshape(batch.num_rows, embedding_dimension)
+        ids.extend(str(value) for value in batch.column(batch.schema.get_field_index(Column.ID.value)).to_pylist())
+        professions.extend(batch.column(batch.schema.get_field_index(Column.PROFESSION.value)).to_pylist())
+        genders.extend(batch.column(batch.schema.get_field_index(Column.GENDER.value)).to_pylist())
+        train_orders.extend(batch.column(batch.schema.get_field_index(Column.TRAIN_ORDER.value)).to_pylist())
+        row_offset = batch_stop
 
-    candidates: list[dict[str, Any]] = []
-    for row in rows:
-        distance = float(row.pop('_distance'))
-        candidates.append({**row, 'retrieval_score': 1.0 - distance})
+    if row_offset != training_row_count:
+        raise RuntimeError(
+            f'Filtered embedding table contains {row_offset} rows; '
+            f'expected {training_row_count} selected training rows'
+        )
+    if len(ids) != len(set(ids)):
+        raise RuntimeError('Filtered embedding table contains duplicate IDs')
+    if set(ids) != set(training_by_id):
+        missing_ids = sorted(set(training_by_id) - set(ids))[:5]
+        extra_ids = sorted(set(ids) - set(training_by_id))[:5]
+        raise RuntimeError(
+            f'Filtered embedding table IDs do not match the selected training pool; '
+            f'missing={missing_ids}, extra={extra_ids}'
+        )
 
-    return candidates
+    metadata_rows: list[dict[str, Any]] = []
+    for row_id, profession, gender, train_order in zip(
+            ids,
+            professions,
+            genders,
+            train_orders,
+            strict=True,
+    ):
+        source_row = training_by_id[row_id]
+        actual_metadata = (profession, gender, train_order)
+        expected_metadata = (
+            source_row[Column.PROFESSION],
+            source_row[Column.GENDER],
+            source_row[Column.TRAIN_ORDER],
+        )
+        if actual_metadata != expected_metadata:
+            raise RuntimeError(
+                f'Filtered embedding metadata for {row_id!r} is misaligned: '
+                f'{actual_metadata!r} != {expected_metadata!r}'
+            )
+        metadata_rows.append({
+            Column.ID: row_id,
+            Column.PROFESSION: profession,
+            Column.GENDER: gender,
+            Column.TRAIN_ORDER: train_order,
+        })
+
+    if not np.isfinite(vectors).all():
+        raise RuntimeError('Exact training matrix contains non-finite values')
+    training_norms = np.linalg.norm(vectors, axis=1)
+    if not np.isfinite(training_norms).all() or np.any(training_norms == 0):
+        raise RuntimeError('Exact training matrix contains a zero vector')
+    return metadata_rows, vectors, training_norms
 
 
-def _get_balanced_semantic_candidates(
-        semantic_table: LanceTable,
-        query_vector: np.ndarray,
-        training_filter: str,
+def _rank_exact_cosine(
+        training_vectors: np.ndarray,
+        query_vectors: np.ndarray,
+        training_norms: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Exhaustively score and stably rank every training vector for every query."""
+
+    query_norms = np.linalg.norm(query_vectors, axis=1)
+    scores = query_vectors @ training_vectors.T
+    scores /= query_norms[:, np.newaxis]
+    scores /= training_norms[np.newaxis, :]
+    if not np.isfinite(scores).all():
+        raise RuntimeError('Exact cosine calculation produced non-finite scores')
+    rankings = np.argsort(-scores, axis=1, kind='stable')
+    return scores, rankings
+
+
+def _validate_example_count(example_count: int, row_count: int) -> None:
+    """Validate a positive retrieval size against the eligible pool."""
+
+    if isinstance(example_count, bool) or not isinstance(example_count, int) or example_count < 1:
+        raise ValueError('example_count must be a positive integer')
+    if example_count > row_count:
+        raise ValueError(f'Cannot retrieve {example_count} examples from {row_count} training rows')
+
+
+def _select_balanced_candidates(
+        ranking: np.ndarray,
+        training_metadata: list[dict[str, Any]],
         example_count: int,
         profession_gender_pairs: tuple[tuple[str, str], ...],
-) -> list[dict[str, Any]]:
-    """Select nearest candidates while balancing profession, gender, and pairs."""
+) -> list[int]:
+    """Greedily balance one complete semantic ranking without relaxing relevance."""
 
     if not profession_gender_pairs:
         raise ValueError('Balanced semantic retrieval requires profession-gender pairs')
+    if ranking.ndim != 1 or len(ranking) != len(training_metadata):
+        raise ValueError('Balanced selection requires one complete semantic ranking')
 
     professions = tuple(sorted({profession for profession, _ in profession_gender_pairs}))
     genders = tuple(sorted({gender for _, gender in profession_gender_pairs}))
@@ -427,96 +838,184 @@ def _get_balanced_semantic_candidates(
     profession_counts = Counter()
     gender_counts = Counter()
     pair_counts = Counter()
-
-    unselected_candidates: list[dict[str, Any]] = []
-    selected: list[dict[str, Any]] = []
-
-    row_count = semantic_table.count_rows(training_filter)
-    offset = 0
-    page_size = max(32, 8 * example_count)
+    selected: list[int] = []
+    selected_set: set[int] = set()
 
     while len(selected) < example_count:
         minimum_profession_count = min(profession_counts[profession] for profession in professions)
         minimum_gender_count = min(gender_counts[gender] for gender in genders)
         minimum_pair_count = min(pair_counts[pair] for pair in profession_gender_pairs)
+        selected_index = next((
+            int(index)
+            for index in ranking
+            if int(index) not in selected_set
+            and profession_counts[training_metadata[int(index)][Column.PROFESSION]] == minimum_profession_count
+            and gender_counts[training_metadata[int(index)][Column.GENDER]] == minimum_gender_count
+            and pair_counts[(
+                training_metadata[int(index)][Column.PROFESSION],
+                training_metadata[int(index)][Column.GENDER],
+            )] == minimum_pair_count
+        ), None)
+        if selected_index is None:
+            break
 
-        first_eligible_index = next(
-            (
-                index
-                for index, candidate in enumerate(unselected_candidates)
-                if profession_counts[candidate[Column.PROFESSION]] == minimum_profession_count
-                   and gender_counts[candidate[Column.GENDER]] == minimum_gender_count
-                   and pair_counts[(candidate[Column.PROFESSION], candidate[Column.GENDER])] == minimum_pair_count
-            ),
-            None,
-        )
-
-        if first_eligible_index is None:
-            if offset >= row_count:
-                break
-
-            page = _get_semantic_candidate_page(
-                semantic_table,
-                query_vector,
-                training_filter,
-                limit=min(page_size, row_count - offset),
-                offset=offset,
-            )
-            if not page:
-                break
-
-            unselected_candidates.extend(page)
-            offset += len(page)
-            page_size *= 2
-            continue
-
-        candidate = unselected_candidates.pop(first_eligible_index)
-        profession = candidate[Column.PROFESSION]
-        gender = candidate[Column.GENDER]
-
-        selected.append(candidate)
+        profession = training_metadata[selected_index][Column.PROFESSION]
+        gender = training_metadata[selected_index][Column.GENDER]
+        selected.append(selected_index)
+        selected_set.add(selected_index)
         profession_counts[profession] += 1
         gender_counts[gender] += 1
         pair_counts[(profession, gender)] += 1
 
     if len(selected) != example_count:
         raise RuntimeError(
-            f'Could not select {example_count} balanced semantic examples after scanning {offset} of {row_count} training rows'
+            f'Could not select {example_count} balanced semantic examples '
+            f'from {len(training_metadata)} fully ranked training rows'
         )
 
     return selected
 
 
-def retrieve_examples(
-        retrieval_method: str,
-        query_vector: np.ndarray,
-        semantic_table: LanceTable,
+def _retrieve_exact_ids(
+        training_metadata: list[dict[str, Any]],
+        training_vectors: np.ndarray,
+        training_norms: np.ndarray,
+        query_ids: list[str],
+        query_vectors: np.ndarray,
+        retrieval_methods: list[str],
+        max_example_count: int,
+        profession_gender_pairs: tuple[tuple[str, str], ...],
+) -> dict[tuple[str, str], list[tuple[str, float]]]:
+    """Compute exact maximum-k selections for all queries and requested methods."""
+
+    unknown_methods = set(retrieval_methods) - RETRIEVAL_METHODS
+    if unknown_methods:
+        raise ValueError(f'Unknown retrieval methods: {sorted(unknown_methods)}')
+    if len(retrieval_methods) != len(set(retrieval_methods)):
+        raise ValueError('Retrieval methods cannot contain duplicates')
+    if not retrieval_methods:
+        raise ValueError('At least one retrieval method is required')
+    _validate_example_count(max_example_count, len(training_metadata))
+    if training_vectors.shape[0] != len(training_metadata):
+        raise ValueError('Training vector rows do not align with training metadata')
+    if query_vectors.shape[0] != len(query_ids):
+        raise ValueError('Query vector rows do not align with query IDs')
+    if len(query_ids) != len(set(query_ids)):
+        raise ValueError('Query IDs must be unique')
+    if 'balanced_semantic' in retrieval_methods:
+        if not profession_gender_pairs:
+            raise ValueError('Balanced semantic retrieval requires profession-gender pairs')
+        metadata_pairs = {
+            (row[Column.PROFESSION], row[Column.GENDER])
+            for row in training_metadata
+        }
+        if not metadata_pairs.issubset(set(profession_gender_pairs)):
+            raise ValueError('Balanced metadata contains a profession-gender pair outside the configured pool')
+    selections: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    for start in range(0, len(query_ids), EXACT_RETRIEVAL_QUERY_BATCH_SIZE):
+        stop = min(start + EXACT_RETRIEVAL_QUERY_BATCH_SIZE, len(query_ids))
+        scores, rankings = _rank_exact_cosine(
+            training_vectors,
+            query_vectors[start:stop],
+            training_norms,
+        )
+        for block_index, query_id in enumerate(query_ids[start:stop]):
+            ranking = rankings[block_index]
+            for retrieval_method in retrieval_methods:
+                if retrieval_method == 'semantic':
+                    selected_indices = [int(index) for index in ranking[:max_example_count]]
+                else:
+                    selected_indices = _select_balanced_candidates(
+                        ranking,
+                        training_metadata,
+                        max_example_count,
+                        profession_gender_pairs,
+                    )
+                selections[(retrieval_method, query_id)] = [
+                    (
+                        str(training_metadata[index][Column.ID]),
+                        float(scores[block_index, index]),
+                    )
+                    for index in selected_indices
+                ]
+        del scores, rankings
+    return selections
+
+
+def _hydrate_retrieval_selections(
+        embedding_model_id: str,
+        selections: dict[tuple[str, str], list[tuple[str, float]]],
+        training_by_id: dict[str, dict[str, Any]],
+) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
+    """Hydrate only selected IDs into the existing in-memory retrieval-cache shape."""
+
+    hydrated: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for (retrieval_method, query_id), selected in selections.items():
+        hydrated[(retrieval_method, embedding_model_id, query_id)] = [
+            {
+                Column.ID: training_by_id[example_id][Column.ID],
+                Column.SPLIT: training_by_id[example_id][Column.SPLIT],
+                Column.HARD_TEXT: training_by_id[example_id][Column.HARD_TEXT],
+                Column.PROFESSION: training_by_id[example_id][Column.PROFESSION],
+                Column.GENDER: training_by_id[example_id][Column.GENDER],
+                'retrieval_score': score,
+            }
+            for example_id, score in selected
+        ]
+    return hydrated
+
+
+def prepare_exact_retrievals(
+        training_table: LanceTable,
+        training_by_id: dict[str, dict[str, Any]],
         training_filter: str,
-        example_count: int,
-        training_profession_gender_pairs: tuple[tuple[str, str], ...],
-) -> list[dict[str, Any]]:
-    """Retrieve exact semantic or relevance-first balanced examples."""
+        evaluation_rows: list[dict[str, Any]],
+        embedding_model: dict[str, Any],
+        retrieval_methods: list[str],
+        max_example_count: int,
+        profession_gender_pairs: tuple[tuple[str, str], ...],
+        device: str,
+        runtime_cache_path: Path,
+        progress: Callable[[str], None] = print,
+) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
+    """Compute configured exact retrievals once before language-model loading."""
 
-    if retrieval_method not in RETRIEVAL_METHODS:
-        raise ValueError(f'Unknown retrieval method {retrieval_method!r}; expected one of {sorted(RETRIEVAL_METHODS)}')
+    query_ids = [str(row[Column.ID]) for row in evaluation_rows]
+    query_vectors = load_or_encode_embedding_queries(
+        evaluation_rows,
+        embedding_model,
+        device,
+        runtime_cache_path,
+    )
 
-    row_count = semantic_table.count_rows(training_filter)
-    if example_count > row_count:
-        raise ValueError(f'Cannot retrieve {example_count} examples from {row_count} training rows')
-
-    if retrieval_method == 'semantic':
-        candidates = _get_semantic_candidate_page(semantic_table, query_vector, training_filter, example_count)
-
-        if len(candidates) != example_count:
-            raise RuntimeError(f'LanceDB returned {len(candidates)} candidates; expected {example_count}')
-        return candidates
-
-    return _get_balanced_semantic_candidates(
-        semantic_table,
-        query_vector,
+    progress(
+        f'Scanning {len(training_by_id)} eligible vectors once for exact exhaustive '
+        f'{embedding_model["id"]} retrieval'
+    )
+    training_metadata, training_vectors, training_norms = _load_exact_training_matrix(
+        training_table,
         training_filter,
-        example_count,
-        training_profession_gender_pairs,
+        training_by_id,
+        embedding_model['dimension'],
+    )
+    try:
+        selections = _retrieve_exact_ids(
+            training_metadata,
+            training_vectors,
+            training_norms,
+            query_ids,
+            query_vectors,
+            retrieval_methods,
+            max_example_count,
+            profession_gender_pairs,
+        )
+    finally:
+        del training_metadata, training_vectors, training_norms, query_vectors
+
+    return _hydrate_retrieval_selections(
+        embedding_model['id'],
+        selections,
+        training_by_id,
     )
 
 

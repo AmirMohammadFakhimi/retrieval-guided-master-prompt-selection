@@ -8,7 +8,6 @@ from typing import Any, cast
 
 import pandas as pd
 import yaml
-from lancedb.table import LanceTable
 from tqdm.auto import tqdm
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
@@ -35,10 +34,7 @@ class PredictionContext:
     target_labels: list[str]
     prediction_method: str
     generation_batch_size: int
-    max_example_count: int
     device: str
-    semantic_resources: dict[str, modeling.SemanticResource]
-    training_profession_gender_pairs: tuple[tuple[str, str], ...]
     retrieval_cache: RetrievalCache
 
 
@@ -174,33 +170,60 @@ def _build_experiment_conditions(
     return experiment_conditions
 
 
-def _prepare_semantic_resources(
+def _prepare_retrieval_cache(
+        complete_training_rows: list[dict[str, Any]],
+        training_rows: list[dict[str, Any]],
         evaluation_rows: list[dict[str, Any]],
         embedding_models: list[dict[str, Any]],
-        cached_tables: dict[str, LanceTable],
+        database_path: Path,
+        runtime_cache_path: Path,
         training_filter: str,
+        retrieval_methods: list[str],
+        max_example_count: int,
+        training_profession_gender_pairs: tuple[tuple[str, str], ...],
         device: str,
-) -> dict[str, modeling.SemanticResource]:
-    """Encode evaluation rows against validated complete training tables."""
+        progress: Callable[[str], None],
+) -> RetrievalCache:
+    """Prepare run-local exact maximum-k selections one embedding model at a time."""
 
-    semantic_resources: dict[str, modeling.SemanticResource] = {}
+    training_rows_digest = modeling.fingerprint_rows(complete_training_rows)
+    training_by_id = {
+        str(row[dataset.Column.ID]): row
+        for row in training_rows
+    }
+    if len(training_by_id) != len(training_rows):
+        raise ValueError('Training pool IDs must be unique')
+    retrieval_cache: RetrievalCache = {}
     progress_bar = tqdm(
         embedding_models,
-        desc='Preparing embedding models',
+        desc='Preparing exact retrievals',
         unit='model',
     )
     for embedding_model in progress_bar:
-        embedding_model_id = embedding_model['id']
+        training_table = modeling.open_training_embedding_table(
+            complete_training_rows,
+            embedding_model,
+            database_path,
+            training_rows_digest,
+        )
+        try:
+            retrieval_cache.update(modeling.prepare_exact_retrievals(
+                training_table,
+                training_by_id,
+                training_filter,
+                evaluation_rows,
+                embedding_model,
+                retrieval_methods,
+                max_example_count,
+                training_profession_gender_pairs,
+                device,
+                runtime_cache_path,
+                progress,
+            ))
+        finally:
+            del training_table
 
-        evaluation_vectors = modeling.encode_embedding_queries(evaluation_rows, embedding_model, device)
-
-        semantic_resources[embedding_model_id] = {
-            'table': cached_tables[embedding_model_id],
-            'evaluation_vectors': evaluation_vectors,
-            'training_filter': training_filter,
-        }
-
-    return semantic_resources
+    return retrieval_cache
 
 
 def _predict_labels_for_condition(
@@ -215,11 +238,6 @@ def _predict_labels_for_condition(
     retrieval_method = condition['retrieval_method']
     embedding_model_id = condition['embedding_model']
     example_count = condition['example_count']
-    if example_count > 0:
-        semantic_resource = context.semantic_resources[embedding_model_id]
-        semantic_table = semantic_resource['table']
-        query_vectors = semantic_resource['evaluation_vectors']
-        training_filter = semantic_resource['training_filter']
 
     if context.prediction_method == 'generated_output':
         prediction_batch_size = context.generation_batch_size
@@ -260,17 +278,11 @@ def _predict_labels_for_condition(
                 if example_count == 0:
                     examples = []
                 else:
-                    query_vector = query_vectors[query_index]
                     retrieval_key = (retrieval_method, embedding_model_id, query[dataset.Column.ID])
-
                     if retrieval_key not in context.retrieval_cache:
-                        context.retrieval_cache[retrieval_key] = modeling.retrieve_examples(
-                            retrieval_method,
-                            query_vector,
-                            semantic_table,
-                            training_filter,
-                            context.max_example_count,
-                            context.training_profession_gender_pairs,
+                        raise RuntimeError(
+                            f'Exact retrieval cache is missing {retrieval_key!r}; '
+                            f'retrieval preparation must finish before language-model loading'
                         )
 
                     # Balanced retrieval order preserves balanced prefixes. Slice the
@@ -444,19 +456,21 @@ def prepare_embedding_cache(
     progress(f'Preparing {len(training_rows)} canonical training rows')
 
     row_counts: dict[str, int] = {}
+    training_rows_digest = modeling.fingerprint_rows(training_rows)
     embedding_models = config['retrieval']['embedding_models']
-    progress_bar = tqdm(embedding_models, desc='Preparing complete embedding caches', unit='model')
+    progress_bar = tqdm(embedding_models, desc='Preparing complete embedding tables', unit='model')
     for embedding_model in progress_bar:
-        table = modeling.prepare_training_embedding_cache(
+        table = modeling.prepare_training_embedding_table(
             training_rows,
             embedding_model,
             device,
             database_path,
+            training_rows_digest,
             progress,
         )
         row_counts[embedding_model['id']] = table.count_rows()
 
-    progress(f'Prepared complete embedding caches at {database_path}')
+    progress(f'Prepared complete manifested embedding tables at {database_path}')
     return row_counts
 
 
@@ -558,39 +572,28 @@ def run_inference(
                 if max_example_count > 0:
                     complete_training_rows = [row for row in source_rows if row[dataset.Column.SPLIT] == 'train']
                     database_path = root / config['retrieval']['lancedb_path']
-                    cached_tables = {
-                        embedding_model['id']: modeling.open_training_embedding_cache(
-                            complete_training_rows,
-                            embedding_model,
-                            database_path,
-                        )
-                        for embedding_model in embedding_models
-                    }
-
                     training_filter = modeling.build_training_filter(train, dataset.train_size_limit(config))
-                    for embedding_model_id, table in cached_tables.items():
-                        filtered_row_count = table.count_rows(training_filter)
-                        if filtered_row_count != len(train):
-                            raise RuntimeError(
-                                f'{embedding_model_id} training filter selected '
-                                f'{filtered_row_count} cached rows; expected the configured '
-                                f'training pool size {len(train)}'
-                            )
-
-                    semantic_resources = _prepare_semantic_resources(
-                        evaluation_rows,
-                        embedding_models,
-                        cached_tables,
-                        training_filter,
-                        device,
-                    )
+                    runtime_cache_path = root / config['retrieval']['runtime_cache_path']
                     training_profession_gender_pairs = tuple(sorted(
                         {(row[dataset.Column.PROFESSION], row[dataset.Column.GENDER]) for row in train}
                     ))
+                    retrieval_cache = _prepare_retrieval_cache(
+                        complete_training_rows,
+                        train,
+                        evaluation_rows,
+                        embedding_models,
+                        database_path,
+                        runtime_cache_path,
+                        training_filter,
+                        retrieval_methods,
+                        max_example_count,
+                        training_profession_gender_pairs,
+                        device,
+                        progress,
+                    )
                 else:
-                    progress('Skipping semantic resources because every example count is zero')
-                    semantic_resources = {}
-                    training_profession_gender_pairs = ()
+                    progress('Skipping exact retrieval preparation because every example count is zero')
+                    retrieval_cache = {}
 
                 prediction_context = PredictionContext(
                     example_order_seed=defaults['seed'],
@@ -601,11 +604,8 @@ def run_inference(
                     target_labels=target_labels,
                     prediction_method=inference_settings['prediction_method'],
                     generation_batch_size=inference_settings['generation_batch_size'],
-                    max_example_count=max_example_count,
                     device=device,
-                    semantic_resources=semantic_resources,
-                    training_profession_gender_pairs=training_profession_gender_pairs,
-                    retrieval_cache={},
+                    retrieval_cache=retrieval_cache,
                 )
 
             prediction_context: PredictionContext = cast(PredictionContext, prediction_context)

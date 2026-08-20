@@ -293,8 +293,8 @@ counts never sends it to an encoder or language model.
 3. If a model CSV is missing and positive counts need retrieval, reuse or embed
    the selected evaluation queries, scan each eligible table once, and compute
    exact exhaustive cosine rankings over every eligible training vector.
-4. Derive and persist both retrieval methods from those complete rankings, then
-   release the retrieval arrays before loading a language model.
+4. Derive the configured retrieval methods in memory from those complete
+   rankings, then release the retrieval arrays before loading a language model.
 5. Load each missing language model once, predict every condition, then
    atomically save its raw predictions and count tables under
    `<output_dir>/incomplete_run/`.
@@ -334,8 +334,9 @@ the edited YAML, so discard the incomplete run before changing experiment settin
   per language model and prompt with retrieval controls set to
   `not_applicable`; positive counts use the retrieval cross-product.
 - `retrieval.lancedb_path` stores manifested training-embedding tables;
-  `retrieval.runtime_cache_path` stores fingerprinted evaluation-query vectors
-  and exact maximum-count retrieval selections.
+  `retrieval.runtime_cache_path` stores fingerprinted evaluation-query-vector
+  NPZ files. Exact maximum-count retrieval selections are recomputed in memory
+  for each required run.
 - Embedding dtype: `float32`, `float16`, or `bfloat16`; language-model dtype may
   additionally be `auto`. Device: `auto`, `cuda`, `mps`, or `cpu`.
 - `inference.prediction_method`: `generated_output` uses deterministic free

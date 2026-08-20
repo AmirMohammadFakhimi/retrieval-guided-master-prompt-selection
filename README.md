@@ -70,11 +70,10 @@ data-loading boundary, not permission to evaluate every split.
 step. It embeds every canonical source-training row for each configured,
 revision-pinned embedding model. Each model owns one manifested LanceDB table;
 an unmanifested, missing, or incompatible table is rebuilt rather than reused.
-New tables are compacted after creation, and reused tables are compacted only
-when their fragment count exceeds 20. Training
-rows are stably sorted from longest to shortest before they are divided into
-bounded input chunks. LanceDB stores that length order while each row's
-`train_order` retains its canonical source position. Its tables are independent
+New tables are compacted once after creation. Reused tables are not compacted
+again. Training rows are stably sorted from longest to shortest before they are
+divided into bounded input chunks. LanceDB stores that length order while each
+row's `train_order` retains its canonical source position. Its tables are independent
 of `dataset.professions` and `dataset.train_size`. Inputs exceeding an embedding
 model's configured sequence limit are reported by row ID and token count, then
 truncated by that encoder.
@@ -115,16 +114,18 @@ When any positive example count is configured and a language-model checkpoint
 is missing, an experiment opens the complete tables read-only, filters
 professions first, then applies numeric `train_size` as the first matching rows
 in the normalized dataset's fixed shuffled order. Before loading a language
-model, it reuses or creates fingerprinted evaluation-query vectors and exact
-maximum-count retrieval selections under `retrieval.runtime_cache_path`.
-Malformed or stale runtime entries are ignored and regenerated atomically; the
-large scan, vector, score, and ranking arrays are released before language-model
-loading. Changing professions, target, prompts, or the train cap does not
-rebuild training embeddings, although inputs that affect query vectors or the
-eligible retrieval pool invalidate the corresponding runtime entry. A missing
-or incompatible training table stops the run with an instruction to prepare it
-explicitly. An all-zero run, or a fully resumed run with no missing model CSV,
-skips table opening, evaluation-query embedding, and retrieval entirely.
+model, it reuses or creates fingerprinted evaluation-query-vector NPZ files
+under `retrieval.runtime_cache_path`, scans each eligible table once, and
+computes the configured exact maximum-count retrieval selections in memory.
+Malformed or stale query-vector files are ignored and regenerated atomically;
+the large scan, vector, score, and ranking arrays are released before
+language-model loading. Changing professions, target, prompts, or the train cap
+does not rebuild training embeddings. Inputs that affect query vectors
+invalidate the corresponding NPZ file; retrieval-pool and retrieval-method
+changes are applied when selections are recomputed. A missing or incompatible
+training table stops the run with an instruction to prepare it explicitly. An
+all-zero run, or a fully resumed run with no missing model CSV, skips table
+opening, evaluation-query embedding, and retrieval entirely.
 
 ## Setup and run
 
@@ -139,14 +140,16 @@ python app.py
 
 Before a run containing positive example counts, select **Prepare all training
 embeddings**. When a language model CSV is missing, **Run configured split**
-prepares or reuses every exact retrieval selection before loading the language
-model. An all-zero run can skip preparation. The app calls inference and
-analysis in sequence. The notebook exposes them as separate
+reuses or creates the query-vector NPZ files and computes every exact retrieval
+selection in memory before loading the language model. An all-zero run can skip
+preparation. The app calls inference and analysis in sequence. The notebook
+exposes them as separate
 `run_inference(...)` and `calculate_metrics(...)` sections.
 
-`run_inference(...)` prepares any required exact retrieval cache, performs the
-expensive model work, and returns an `inference_run` containing the raw
-prediction table and its analysis context. It also saves the combined
+`run_inference(...)` prepares any required query-vector cache, computes exact
+retrieval selections in memory, performs the expensive model work, and returns
+an `inference_run` containing the raw prediction table and its analysis context.
+It also saves the combined
 prediction CSV and the two count CSVs under `<output_dir>/incomplete_run/`.
 `calculate_metrics(...)` consumes the object without loading a language model,
 embedding a query, retrieving examples, or generating predictions. After a

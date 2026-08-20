@@ -53,7 +53,7 @@ dataset:
   # reports both that maximum and the selected value. Total rows = professions
   # * 2 * the selected value.
   # Recommended explicit values: 5 for validation and 10 for test.
-  evaluation_per_profession_gender: 10
+  evaluation_per_profession_gender: 5
 
 retrieval:
   # Non-empty unique list. Exact values: semantic | balanced_semantic.
@@ -106,8 +106,8 @@ retrieval:
   # training table; preparation rebuilds it when it is missing or incompatible.
   lancedb_path: data/lancedb
 
-  # Non-empty path string for fingerprinted evaluation-query vectors and exact
-  # maximum-k retrieval selections. Invalid entries are regenerated atomically.
+  # Non-empty path string for fingerprinted evaluation-query-vector NPZ files.
+  # Invalid vector files are regenerated atomically.
   runtime_cache_path: data/retrieval_cache
 
 # Non-empty mapping of unique non-empty names to complete master-prompt strings.

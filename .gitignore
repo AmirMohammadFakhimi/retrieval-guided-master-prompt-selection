@@ -2,12 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
-.pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-.coverage.*
-htmlcov/
 .ipynb_checkpoints/
 
 # Python environments and build artifacts

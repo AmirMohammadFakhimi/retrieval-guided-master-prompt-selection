@@ -243,10 +243,10 @@ def select_profession_splits(
 
 
 def select_run_data(
-        config: dict[str, Any],
-        split_rows: dict[str, list[dict[str, Any]]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
-    """Select the capped retrieval pool and configured evaluation rows."""
+    config: dict[str, Any],
+    split_rows: dict[str, list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, int]:
+    """Select run rows and return selected and maximum balanced cell sizes."""
 
     evaluation_split = config['defaults']['evaluation_split']
     missing_splits = {'train', evaluation_split} - set(split_rows)
@@ -285,6 +285,7 @@ def select_run_data(
             progress_bar.update(1)
     progress_bar.close()
 
+    max_balanced_per_cell = min(map(len, evaluation_cells.values()))
     evaluation_per_profession_gender = config['dataset']['evaluation_per_profession_gender']
     if evaluation_per_profession_gender == 'max_balanced':
         empty_cells = [cell for cell, rows in evaluation_cells.items() if not rows]
@@ -293,7 +294,7 @@ def select_run_data(
                 f"Dataset {config['dataset']['hub_id']!r} has no {evaluation_split} rows "
                 f'for these profession/gender cells: {empty_cells}'
             )
-        evaluation_per_cell = min(map(len, evaluation_cells.values()))
+        evaluation_per_cell = max_balanced_per_cell
     else:
         evaluation_per_cell = evaluation_per_profession_gender
 
@@ -301,11 +302,12 @@ def select_run_data(
     if missing_cells:
         raise ValueError(
             f"Dataset {config['dataset']['hub_id']!r} lacks enough {evaluation_split} rows "
-            f"for these profession/gender cells: {missing_cells}"
+            f"for evaluation_per_profession_gender={evaluation_per_cell}; "
+            f'max_balanced is {max_balanced_per_cell}. Insufficient cells: {missing_cells}'
         )
 
     evaluation = [row for rows in evaluation_cells.values() for row in rows[:evaluation_per_cell]]
-    return train, evaluation, evaluation_per_cell
+    return train, evaluation, evaluation_per_cell, max_balanced_per_cell
 
 
 def calculate_dataset_counts(config: dict[str, Any], split_rows: dict[str, list[dict[str, Any]]]) -> pd.DataFrame:

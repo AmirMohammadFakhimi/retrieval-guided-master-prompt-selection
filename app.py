@@ -295,11 +295,17 @@ counts never sends it to an encoder or language model.
 4. If a model CSV is missing, embed selected evaluation rows only when positive
    counts need retrieval.
 5. Load each missing language model once, predict every condition, then
-   atomically save its raw predictions under `<output_dir>/incomplete_run/`.
+   atomically save its raw predictions and count tables under
+   `<output_dir>/incomplete_run/`.
 6. For each completed or resumed model, calculate and rank every condition and
    mark exactly one `is_best`.
-7. Write complete tables, plots, and best prompts, then delete `incomplete_run`.
+7. Write complete tables, matched factor contrasts, plots, and best prompts,
+   then delete `incomplete_run`.
 
+The app performs inference and metric calculation in one action. The notebook
+separates them so metric code, ranking metric, and ranking direction can be
+recalculated from saved predictions without model inference, including after a
+kernel restart.
 There is no automatic validation-to-test transition. Switching to `test` is a
 deliberate configuration change and runs the same complete condition grid.
 Restarting reuses every available model CSV. Checkpoints are not compared with
@@ -317,9 +323,10 @@ the edited YAML, so discard the incomplete run before changing experiment settin
 - `professions`: `all` or a unique list of at least two supported professions.
 - `train_size`: `all` or a positive integer. This caps retrieval rows only.
 - `evaluation_per_profession_gender`: a positive integer, or `max_balanced` to
-  use the smallest available cell in the selected split. The flow prints the
-  resolved integer. Evaluation rows equal **profession count × 2 genders × the
-  resolved value**.
+  use the smallest available cell in the selected split. Immediately before
+  inference, the flow always prints the maximum balanced capacity and selected
+  value. Evaluation rows equal **profession count × 2 genders × the selected
+  value**.
 - Retrieval methods: `semantic`, `balanced_semantic`. Example order:
   `most_similar_first`, `most_similar_last`, or `shuffle`.
 - `example_counts`: unique non-negative integers. Zero creates one condition
@@ -368,6 +375,30 @@ $$
 score(c)=\frac{1}{|T_c|}\sum_j\log P(t_j\mid prompt,t_{1:j-1}),\qquad
 \hat c=\arg\max_c score(c)
 $$
+
+### Factor contrasts
+
+The two factor-contrast CSVs compare every pair of configured levels while
+holding every other applicable factor fixed. They cover language model, prompt,
+retrieval method, embedding model, positive example count, and example order.
+The detail table contains each matched metric delta. The summary aggregates
+those deltas overall and, except for language-model contrasts, within each
+language model. Difference metrics are lower-is-better; other eligible rates,
+agreement scores, and parity ratios are higher-is-better. Undefined pairs are
+retained in total counts but omitted from defined-pair aggregates.
+
+Detail rows store the contrast type, factor transition, fixed JSON context,
+source/target metric values, raw and direction-adjusted deltas, outcome, and
+condition counts. Summary rows store scope, total/defined pairs, mean source and
+target values, delta mean/standard deviation, improved/tied/worsened counts, and
+the improvement rate.
+
+Zero-shot is separate from strict example-count contrasts because retrieval
+controls become applicable when examples are introduced. For each positive
+count, `zero_shot_to_few_shot` first averages the complete retrieval grid within
+one language-model and prompt context and then compares that mean with zero-shot.
+The reported changes are descriptive paired differences, not causal estimates
+or significance tests, and no composite quality/fairness score is created.
 
 ### Metric reference
 

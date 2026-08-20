@@ -17,10 +17,13 @@ defaults:
   # Non-empty numeric column from <split>_results.csv, or one of these aliases:
   # accuracy, micro_precision, micro_recall, micro_f1, weighted_recall,
   # macro_recall, balanced_accuracy. Recommended quality metric: macro_f1.
+  # In the notebook, this may be changed after run_inference; rerun only the
+  # calculate_metrics section to regenerate rankings and artifacts. Saved raw
+  # predictions can also be reloaded after a kernel restart.
   ranking_metric: macro_f1
 
   # Exact values: maximize | minimize. Use maximize for quality/ratio metrics
-  # and minimize for error/difference metrics.
+  # and minimize for error/difference metrics. This is also analysis-only.
   ranking_direction: maximize
 
 dataset:
@@ -46,8 +49,9 @@ dataset:
   train_size: all
 
   # Exact form: a positive integer, or max_balanced to use the smallest
-  # available profession-gender cell in the selected split. The flow prints the
-  # resolved integer. Total rows = professions * 2 * the resolved value.
+  # available profession-gender cell in the selected split. The flow always
+  # reports both that maximum and the selected value. Total rows = professions
+  # * 2 * the selected value.
   # Recommended explicit values: 5 for validation and 10 for test.
   evaluation_per_profession_gender: 5
 

@@ -1,3 +1,5 @@
+import json
+from itertools import combinations
 from pathlib import Path
 from typing import Any, cast
 
@@ -80,6 +82,62 @@ RESULT_NUMERIC_COLUMNS = frozenset({
     'n_demographic_parity_ratio_defined_target_labels',
 })
 
+EXPERIMENT_FACTOR_COLUMNS = (
+    'language_model',
+    'prompt_name',
+    'retrieval_method',
+    'embedding_model',
+    'example_count',
+    'example_order',
+)
+FACTOR_CONTRAST_CONTEXT_COLUMNS = (
+    'evaluation_split',
+    'target',
+    'audit_column',
+    'prediction_method',
+)
+FACTOR_CONTRAST_DETAIL_COLUMNS = (
+    'contrast_type',
+    'factor',
+    'from_factor_value',
+    'to_factor_value',
+    'evaluation_split',
+    'target',
+    'audit_column',
+    'prediction_method',
+    'language_model',
+    'fixed_context',
+    'metric',
+    'direction',
+    'from_metric_value',
+    'to_metric_value',
+    'delta',
+    'improvement',
+    'outcome',
+    'from_condition_count',
+    'to_condition_count',
+)
+FACTOR_CONTRAST_SUMMARY_COLUMNS = (
+    'contrast_type',
+    'aggregation_scope',
+    'scope_language_model',
+    'factor',
+    'from_factor_value',
+    'to_factor_value',
+    'metric',
+    'direction',
+    'n_total_pairs',
+    'n_defined_pairs',
+    'mean_from_metric_value',
+    'mean_to_metric_value',
+    'mean_delta',
+    'std_delta',
+    'n_improved',
+    'n_tied',
+    'n_worsened',
+    'improvement_rate',
+)
+
 
 # Metric notation used in the calculations below:
 # c is a target label, g is an audit group, K is the number of target labels,
@@ -109,6 +167,352 @@ def resolve_metric_column(metric: str) -> str:
     """Return the result-column name for a standard metric name or shared column."""
 
     return METRIC_COLUMN_ALIASES.get(metric, metric)
+
+
+def _factor_levels(config: dict[str, Any]) -> dict[str, list[Any]]:
+    """Return experiment-factor levels in their configured order."""
+
+    retrieval = config['retrieval']
+    return {
+        'language_model': [entry['id'] for entry in config['inference']['language_models']],
+        'prompt_name': list(config['prompt_templates']),
+        'retrieval_method': list(retrieval['methods']),
+        'embedding_model': [entry['id'] for entry in retrieval['embedding_models']],
+        'example_count': [count for count in retrieval['example_counts'] if count > 0],
+        'example_order': list(retrieval['example_orders']),
+    }
+
+
+def _factor_contrast_metric_columns(results: pd.DataFrame) -> list[str]:
+    """Return ordered condition-level rates and scores eligible for contrasts."""
+
+    excluded = {
+        'example_count',
+        'sample_count',
+        'n_target_labels',
+        'n_audit_groups',
+    }
+    return [
+        column
+        for column in results.columns
+        if column in RESULT_NUMERIC_COLUMNS
+        and column not in excluded
+        and not column.startswith('n_')
+    ]
+
+
+def _metric_direction(metric: str) -> str:
+    """Return the preferred direction for one condition-level metric."""
+
+    return 'minimize' if metric.endswith('_difference') else 'maximize'
+
+
+def _contrast_outcome(improvement: float) -> str:
+    """Describe a direction-adjusted metric change."""
+
+    if pd.isna(improvement):
+        return 'undefined'
+    if improvement > 0:
+        return 'improved'
+    if improvement < 0:
+        return 'worsened'
+    return 'tied'
+
+
+def _fixed_context_text(row: pd.Series, columns: list[str]) -> str:
+    """Serialize the held-constant columns for one matched comparison."""
+
+    return json.dumps(
+        {column: row[column] for column in columns},
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
+def _strict_factor_contrast_details(
+        results: pd.DataFrame,
+        factor_levels: dict[str, list[Any]],
+        metric_columns: list[str],
+) -> list[dict[str, Any]]:
+    """Return metric deltas for pairs that vary exactly one factor."""
+
+    detail_rows: list[dict[str, Any]] = []
+    factor_columns = list(EXPERIMENT_FACTOR_COLUMNS)
+    context_columns = list(FACTOR_CONTRAST_CONTEXT_COLUMNS)
+
+    for factor in factor_columns:
+        levels = factor_levels[factor]
+        if len(levels) < 2:
+            continue
+
+        eligible = results.loc[results[factor].isin(levels)].copy()
+        fixed_columns = context_columns + [
+            column for column in factor_columns if column != factor
+        ]
+
+        for from_level, to_level in combinations(levels, 2):
+            from_rows = eligible.loc[eligible[factor].eq(from_level)]
+            to_rows = eligible.loc[eligible[factor].eq(to_level)]
+
+            if from_rows.duplicated(fixed_columns).any() or to_rows.duplicated(fixed_columns).any():
+                raise ValueError(
+                    f'Factor contrast {factor!r} has duplicate held-constant contexts'
+                )
+
+            matched = from_rows.merge(
+                to_rows,
+                on=fixed_columns,
+                how='inner',
+                suffixes=('_from', '_to'),
+                validate='one_to_one',
+            )
+            if len(matched) != len(from_rows) or len(matched) != len(to_rows):
+                raise ValueError(
+                    f'Factor contrast {factor!r} has incomplete matched contexts for '
+                    f'{from_level!r} and {to_level!r}'
+                )
+
+            for _, matched_row in matched.iterrows():
+                fixed_context = _fixed_context_text(matched_row, fixed_columns)
+                language_model = (
+                    'not_applicable'
+                    if factor == 'language_model'
+                    else matched_row['language_model']
+                )
+
+                for metric in metric_columns:
+                    direction = _metric_direction(metric)
+                    from_metric_value = matched_row[f'{metric}_from']
+                    to_metric_value = matched_row[f'{metric}_to']
+                    delta = (
+                        to_metric_value - from_metric_value
+                        if pd.notna(from_metric_value) and pd.notna(to_metric_value)
+                        else np.nan
+                    )
+                    improvement = delta if direction == 'maximize' else -delta
+                    detail_rows.append({
+                        'contrast_type': 'single_factor',
+                        'factor': factor,
+                        'from_factor_value': from_level,
+                        'to_factor_value': to_level,
+                        'evaluation_split': matched_row['evaluation_split'],
+                        'target': matched_row['target'],
+                        'audit_column': matched_row['audit_column'],
+                        'prediction_method': matched_row['prediction_method'],
+                        'language_model': language_model,
+                        'fixed_context': fixed_context,
+                        'metric': metric,
+                        'direction': direction,
+                        'from_metric_value': from_metric_value,
+                        'to_metric_value': to_metric_value,
+                        'delta': delta,
+                        'improvement': improvement,
+                        'outcome': _contrast_outcome(improvement),
+                        'from_condition_count': 1,
+                        'to_condition_count': 1,
+                    })
+
+    return detail_rows
+
+
+def _zero_shot_contrast_details(
+        results: pd.DataFrame,
+        positive_example_counts: list[int],
+        metric_columns: list[str],
+        retrieval_configuration_count: int,
+) -> list[dict[str, Any]]:
+    """Compare zero-shot with the mean configured retrieval condition at each count."""
+
+    if not positive_example_counts or not results['example_count'].eq(0).any():
+        return []
+
+    grouping_columns = [
+        *FACTOR_CONTRAST_CONTEXT_COLUMNS,
+        'language_model',
+        'prompt_name',
+    ]
+    zero_shot = results.loc[results['example_count'].eq(0)]
+    if zero_shot.duplicated(grouping_columns).any():
+        raise ValueError('Zero-shot factor contrasts require one row per language model and prompt')
+
+    detail_rows: list[dict[str, Any]] = []
+    for example_count in positive_example_counts:
+        few_shot = results.loc[results['example_count'].eq(example_count)]
+        observed_configuration_counts = few_shot.groupby(
+            grouping_columns,
+            dropna=False,
+        ).size()
+        if (
+                observed_configuration_counts.empty
+                or not observed_configuration_counts.eq(retrieval_configuration_count).all()
+        ):
+            raise ValueError(
+                f'Zero-shot comparison for example_count={example_count} requires '
+                f'{retrieval_configuration_count} retrieval conditions per language model and prompt'
+            )
+
+        averaged_few_shot = few_shot.groupby(
+            grouping_columns,
+            as_index=False,
+            dropna=False,
+            sort=False,
+        )[metric_columns].agg(lambda values: values.mean(skipna=False))
+        matched = zero_shot.merge(
+            averaged_few_shot,
+            on=grouping_columns,
+            how='inner',
+            suffixes=('_from', '_to'),
+            validate='one_to_one',
+        )
+        if len(matched) != len(zero_shot) or len(matched) != len(averaged_few_shot):
+            raise ValueError(
+                f'Zero-shot comparison for example_count={example_count} has incomplete contexts'
+            )
+
+        for _, matched_row in matched.iterrows():
+            fixed_context = _fixed_context_text(matched_row, grouping_columns)
+            for metric in metric_columns:
+                direction = _metric_direction(metric)
+                from_metric_value = matched_row[f'{metric}_from']
+                to_metric_value = matched_row[f'{metric}_to']
+                delta = (
+                    to_metric_value - from_metric_value
+                    if pd.notna(from_metric_value) and pd.notna(to_metric_value)
+                    else np.nan
+                )
+                improvement = delta if direction == 'maximize' else -delta
+                detail_rows.append({
+                    'contrast_type': 'zero_shot_to_few_shot',
+                    'factor': 'example_count',
+                    'from_factor_value': 0,
+                    'to_factor_value': example_count,
+                    'evaluation_split': matched_row['evaluation_split'],
+                    'target': matched_row['target'],
+                    'audit_column': matched_row['audit_column'],
+                    'prediction_method': matched_row['prediction_method'],
+                    'language_model': matched_row['language_model'],
+                    'fixed_context': fixed_context,
+                    'metric': metric,
+                    'direction': direction,
+                    'from_metric_value': from_metric_value,
+                    'to_metric_value': to_metric_value,
+                    'delta': delta,
+                    'improvement': improvement,
+                    'outcome': _contrast_outcome(improvement),
+                    'from_condition_count': 1,
+                    'to_condition_count': retrieval_configuration_count,
+                })
+
+    return detail_rows
+
+
+def _summarize_factor_contrasts(details: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate matched metric deltas overall and within language model."""
+
+    grouping_columns = [
+        'contrast_type',
+        'factor',
+        'from_factor_value',
+        'to_factor_value',
+        'metric',
+        'direction',
+    ]
+
+    def summarize(table: pd.DataFrame, scope: str, language_model: str) -> dict[str, Any]:
+        defined = table.loc[table['delta'].notna()]
+        n_defined = len(defined)
+        return {
+            'contrast_type': table['contrast_type'].iloc[0],
+            'aggregation_scope': scope,
+            'scope_language_model': language_model,
+            'factor': table['factor'].iloc[0],
+            'from_factor_value': table['from_factor_value'].iloc[0],
+            'to_factor_value': table['to_factor_value'].iloc[0],
+            'metric': table['metric'].iloc[0],
+            'direction': table['direction'].iloc[0],
+            'n_total_pairs': len(table),
+            'n_defined_pairs': n_defined,
+            'mean_from_metric_value': defined['from_metric_value'].mean(),
+            'mean_to_metric_value': defined['to_metric_value'].mean(),
+            'mean_delta': defined['delta'].mean(),
+            'std_delta': defined['delta'].std(),
+            'n_improved': int(defined['outcome'].eq('improved').sum()),
+            'n_tied': int(defined['outcome'].eq('tied').sum()),
+            'n_worsened': int(defined['outcome'].eq('worsened').sum()),
+            'improvement_rate': (
+                float(defined['outcome'].eq('improved').mean())
+                if n_defined
+                else np.nan
+            ),
+        }
+
+    summary_rows: list[dict[str, Any]] = []
+    for _, group in details.groupby(grouping_columns, dropna=False, sort=False):
+        summary_rows.append(summarize(group, 'overall', 'not_applicable'))
+
+        if group['factor'].iloc[0] == 'language_model':
+            continue
+        for language_model, language_model_group in group.groupby(
+                'language_model',
+                dropna=False,
+                sort=False,
+        ):
+            summary_rows.append(summarize(
+                language_model_group,
+                'language_model',
+                str(language_model),
+            ))
+
+    return pd.DataFrame(summary_rows, columns=FACTOR_CONTRAST_SUMMARY_COLUMNS)
+
+
+def calculate_factor_contrasts(
+        results: pd.DataFrame,
+        config: dict[str, Any],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return matched one-factor details and descriptive aggregate summaries."""
+
+    required_columns = {
+        *FACTOR_CONTRAST_CONTEXT_COLUMNS,
+        *EXPERIMENT_FACTOR_COLUMNS,
+        'condition',
+    }
+    missing_columns = sorted(required_columns - set(results.columns))
+    if missing_columns:
+        raise ValueError(f'results is missing factor-contrast columns: {missing_columns}')
+    if results.empty:
+        raise ValueError('results must contain at least one condition')
+
+    condition_key = [
+        *FACTOR_CONTRAST_CONTEXT_COLUMNS,
+        *EXPERIMENT_FACTOR_COLUMNS,
+    ]
+    if results.duplicated(condition_key).any():
+        raise ValueError('results contains duplicate experiment-factor combinations')
+
+    metric_columns = _factor_contrast_metric_columns(results)
+    if not metric_columns:
+        raise ValueError('results contains no eligible factor-contrast metrics')
+
+    levels = _factor_levels(config)
+    detail_rows = _strict_factor_contrast_details(results, levels, metric_columns)
+    retrieval_configuration_count = (
+        len(levels['retrieval_method'])
+        * len(levels['embedding_model'])
+        * len(levels['example_order'])
+    )
+    detail_rows.extend(_zero_shot_contrast_details(
+        results,
+        levels['example_count'],
+        metric_columns,
+        retrieval_configuration_count,
+    ))
+
+    details = pd.DataFrame(detail_rows, columns=FACTOR_CONTRAST_DETAIL_COLUMNS)
+    if details.empty:
+        return details, pd.DataFrame(columns=FACTOR_CONTRAST_SUMMARY_COLUMNS)
+    return details, _summarize_factor_contrasts(details)
 
 
 def _safe_rate(numerator: float, denominator: float) -> float:

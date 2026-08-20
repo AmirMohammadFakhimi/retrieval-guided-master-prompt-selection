@@ -65,12 +65,62 @@ def _language_model_checkpoint_path(checkpoint_dir: Path, language_model_id: str
     return checkpoint_dir / f'{filename}_predictions.csv'
 
 
-def _write_language_model_checkpoint(path: Path, predictions: pd.DataFrame) -> None:
-    """Atomically save one language model's complete raw predictions."""
+def _write_csv_atomically(path: Path, table: pd.DataFrame) -> None:
+    """Atomically save one CSV table."""
 
     temporary_path = path.with_suffix('.tmp')
-    predictions.to_csv(temporary_path, index=False)
+    table.to_csv(temporary_path, index=False)
     temporary_path.replace(path)
+
+
+def load_inference_run(
+        config: dict[str, Any],
+        predictions_path: str | Path,
+        project_root: str | Path = '.',
+        progress: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """Load one saved prediction CSV for metric-only recalculation."""
+
+    configuration.validate_config(config)
+    root = Path(project_root).resolve()
+    path = Path(predictions_path)
+    if not path.is_absolute():
+        path = root / path
+    path = path.resolve()
+
+    evaluation_split = config['defaults']['evaluation_split']
+    predictions = pd.read_csv(path)
+    if set(predictions['evaluation_split']) != {evaluation_split}:
+        raise ValueError(
+            f'{path} does not contain only the configured {evaluation_split} split'
+        )
+
+    target, _, _, target_labels = dataset.task_settings(config)
+    retrieval = config['retrieval']
+    experiment_conditions = _build_experiment_conditions(
+        target,
+        retrieval['methods'],
+        retrieval['embedding_models'],
+        config['inference']['language_models'],
+        retrieval['example_counts'],
+        retrieval['example_orders'],
+        config['prompt_templates'],
+    )
+
+    progress(f'Loaded saved predictions: {path}')
+    return {
+        'evaluation_split': evaluation_split,
+        'predictions': predictions,
+        'experiment_conditions': experiment_conditions,
+        'target_labels': target_labels,
+        'source_dataset_counts': pd.read_csv(
+            path.parent / f'{evaluation_split}_source_dataset_counts.csv'
+        ),
+        'run_dataset_counts': pd.read_csv(
+            path.parent / f'{evaluation_split}_run_dataset_counts.csv'
+        ),
+        'resumed_language_models': [],
+    }
 
 
 def _build_experiment_conditions(
@@ -381,12 +431,12 @@ def prepare_embedding_cache(
     return row_counts
 
 
-def run_experiment(
+def run_inference(
         config: dict[str, Any],
         project_root: str | Path = '.',
         progress: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """Run the complete experiment and return tables plus output paths."""
+    """Run model inference only and retain everything needed for metrics."""
 
     configuration.validate_config(config)
     root = Path(project_root).resolve()
@@ -407,12 +457,20 @@ def run_experiment(
     embedding_models = config['retrieval']['embedding_models']
 
     source_dataset_counts = dataset.calculate_dataset_counts(config, source_splits)
-    train, evaluation_rows, evaluation_per_cell = dataset.select_run_data(config, source_splits)
-    if config['dataset']['evaluation_per_profession_gender'] == 'max_balanced':
-        progress(
-            f'Resolved evaluation_per_profession_gender=max_balanced to '
-            f'{evaluation_per_cell} rows per profession/gender cell'
-        )
+    (
+        train,
+        evaluation_rows,
+        evaluation_per_cell,
+        max_balanced_per_cell,
+    ) = dataset.select_run_data(config, source_splits)
+    progress(
+        f'Maximum balanced {evaluation_split} capacity before inference: '
+        f'{max_balanced_per_cell} rows per profession/gender cell'
+    )
+    progress(
+        f'Selected {evaluation_split} size before inference: '
+        f'{evaluation_per_cell} rows per profession/gender cell'
+    )
 
     run_dataset_counts = dataset.calculate_dataset_counts(
         config,
@@ -441,11 +499,6 @@ def run_experiment(
     resumed_language_models: list[str] = []
     prediction_context: PredictionContext | None = None
     condition_prediction_tables: list[pd.DataFrame] = []
-    ranked_result_tables: list[pd.DataFrame] = []
-    condition_target_label_metric_tables: list[pd.DataFrame] = []
-    condition_confusion_matrices: list[pd.DataFrame] = []
-    condition_audit_group_metric_tables: list[pd.DataFrame] = []
-    condition_fairness_metric_tables: list[pd.DataFrame] = []
 
     language_model_progress_bar = tqdm(
         language_models_config,
@@ -558,16 +611,85 @@ def run_experiment(
                     model_condition_prediction_tables,
                     ignore_index=True,
                 )
-                _write_language_model_checkpoint(checkpoint_path, model_predictions)
+                _write_csv_atomically(checkpoint_path, model_predictions)
                 progress(f'Checkpointed completed language model: {language_model_id}')
             finally:
                 del tokenizer, language_model
                 modeling.clear_model_memory(device)
 
-        condition_result_tables: list[pd.DataFrame] = []
         for condition in language_model_conditions:
             condition_predictions = model_predictions.loc[
                 model_predictions['condition'].eq(condition['condition'])
+            ].copy()
+            condition_prediction_tables.append(condition_predictions)
+
+    predictions = pd.concat(condition_prediction_tables, ignore_index=True)
+    predictions_path = checkpoint_dir / f'{evaluation_split}_predictions.csv'
+    _write_csv_atomically(predictions_path, predictions)
+    _write_csv_atomically(
+        checkpoint_dir / f'{evaluation_split}_source_dataset_counts.csv',
+        source_dataset_counts,
+    )
+    _write_csv_atomically(
+        checkpoint_dir / f'{evaluation_split}_run_dataset_counts.csv',
+        run_dataset_counts,
+    )
+    progress(f'Inference finished: {len(predictions)} predictions are ready for metric calculation')
+    progress(f'Saved predictions: {predictions_path}')
+    return {
+        'evaluation_split': evaluation_split,
+        'predictions': predictions,
+        'experiment_conditions': experiment_conditions,
+        'target_labels': target_labels,
+        'source_dataset_counts': source_dataset_counts,
+        'run_dataset_counts': run_dataset_counts,
+        'resumed_language_models': resumed_language_models,
+        'predictions_path': predictions_path,
+    }
+
+
+def calculate_metrics(
+        config: dict[str, Any],
+        inference_run: dict[str, Any],
+        project_root: str | Path = '.',
+        progress: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """Calculate all metrics and artifacts from an existing inference run."""
+
+    configuration.validate_config(config)
+    root = Path(project_root).resolve()
+    defaults = config['defaults']
+    evaluation_split = defaults['evaluation_split']
+    target_labels = inference_run['target_labels']
+    predictions = inference_run['predictions']
+    experiment_conditions = inference_run['experiment_conditions']
+
+    if inference_run['evaluation_split'] != evaluation_split:
+        raise ValueError('The inference run belongs to a different evaluation split')
+
+    progress('Calculating metrics, rankings, factor contrasts, plots, and reports')
+    ranked_result_tables: list[pd.DataFrame] = []
+    condition_target_label_metric_tables: list[pd.DataFrame] = []
+    condition_confusion_matrices: list[pd.DataFrame] = []
+    condition_audit_group_metric_tables: list[pd.DataFrame] = []
+    condition_fairness_metric_tables: list[pd.DataFrame] = []
+
+    language_model_progress_bar = tqdm(
+        config['inference']['language_models'],
+        desc=f'Calculating {evaluation_split} metrics',
+        unit='model',
+    )
+    for language_model_config in language_model_progress_bar:
+        language_model_id = language_model_config['id']
+        language_model_conditions = [
+            condition
+            for condition in experiment_conditions
+            if condition['language_model'] == language_model_id
+        ]
+        condition_result_tables: list[pd.DataFrame] = []
+        for condition in language_model_conditions:
+            condition_predictions = predictions.loc[
+                predictions['condition'].eq(condition['condition'])
             ].copy()
 
             (
@@ -578,7 +700,6 @@ def run_experiment(
                 condition_fairness_metrics,
             ) = evaluation.calculate_condition_metrics(condition_predictions, target_labels)
 
-            condition_prediction_tables.append(condition_predictions)
             condition_result_tables.append(condition_result)
             condition_target_label_metric_tables.append(condition_target_label_metrics)
             condition_confusion_matrices.append(condition_confusion_matrix)
@@ -594,21 +715,38 @@ def run_experiment(
         )
 
     results = pd.concat(ranked_result_tables, ignore_index=True)
+    factor_contrast_details, factor_contrast_summary = evaluation.calculate_factor_contrasts(
+        results,
+        config,
+    )
 
     result_tables = {
-        'predictions': pd.concat(condition_prediction_tables, ignore_index=True),
+        'predictions': predictions.copy(),
         'results': results,
+        'factor_contrast_details': factor_contrast_details,
+        'factor_contrast_summary': factor_contrast_summary,
         'target_label_metrics': pd.concat(condition_target_label_metric_tables, ignore_index=True),
         'confusion_matrix': pd.concat(condition_confusion_matrices, ignore_index=True),
         'audit_group_metrics': pd.concat(condition_audit_group_metric_tables, ignore_index=True),
         'fairness_metrics': pd.concat(condition_fairness_metric_tables, ignore_index=True),
-        'source_dataset_counts': source_dataset_counts,
-        'run_dataset_counts': run_dataset_counts,
+        'source_dataset_counts': inference_run['source_dataset_counts'].copy(),
+        'run_dataset_counts': inference_run['run_dataset_counts'].copy(),
     }
 
     output = _write_run_outputs(root, config, result_tables, target_labels)
     discard_incomplete_run(config, root)
-    output['resumed_language_models'] = resumed_language_models
+    output['resumed_language_models'] = list(inference_run['resumed_language_models'])
 
     progress(f'Finished: {output['run_dir']}')
     return output
+
+
+def run_experiment(
+        config: dict[str, Any],
+        project_root: str | Path = '.',
+        progress: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """Run inference and metric calculation as one convenience operation."""
+
+    inference_run = run_inference(config, project_root, progress)
+    return calculate_metrics(config, inference_run, project_root, progress)

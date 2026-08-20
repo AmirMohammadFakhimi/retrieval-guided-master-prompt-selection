@@ -15,8 +15,10 @@ The pipeline uses Hugging Face Transformers directly and loads language models
 one at a time. Qwen thinking is disabled by the native chat-template argument
 used for all configured language models.
 
-The checked-in device is `mps`, so a missing Apple-GPU runtime raises instead
-of silently running these large language models on CPU.
+The checked-in configuration requests `mps`. Before running the project, set
+`inference.device` to `auto` or to a backend available on the current machine:
+`cuda`, `mps`, or `cpu`. An explicitly requested unavailable accelerator raises
+an error instead of silently falling back to CPU.
 
 `inference.prediction_method` selects exactly one prediction method for a run:
 
@@ -70,9 +72,11 @@ limit are reported by row ID and token count, then truncated by that encoder.
 
 `select_run_data(config, split_rows)` applies `dataset.train_size`, verifies
 that every retrieval example count fits the selected train pool, and returns
-the train rows, evaluation rows, and resolved rows per profession-gender cell.
-An explicit positive integer uses that many rows; `max_balanced` resolves to
-the smallest available cell in only `defaults.evaluation_split`.
+the train rows, evaluation rows, selected rows per profession-gender cell, and
+maximum balanced rows per cell. An explicit positive integer uses that many
+rows; `max_balanced` resolves to the smallest available cell in only
+`defaults.evaluation_split`. Every run reports both the maximum and selected
+values before inference.
 
 `semantic` retrieves exact cosine-nearest rows. `balanced_semantic` greedily
 selects the nearest currently feasible rows while balancing profession,
@@ -101,10 +105,13 @@ embeddings. A missing or incomplete required cache stops the run with an
 instruction to prepare it explicitly. An all-zero run skips table opening and
 evaluation-query embedding entirely.
 
-## Run
+## Setup and run
+
+From the repository root, use any Python environment in which the project
+requirements can be installed. No particular environment manager or
+environment name is required.
 
 ```bash
-conda activate prompt-selection
 python -m pip install -r requirements.txt
 python app.py
 ```
@@ -113,15 +120,36 @@ Before a run containing positive example counts, select **Prepare all training
 embeddings**. When a language model CSV is missing, **Run configured split**
 embeds only the selected evaluation queries and retrieves exact neighbors from
 the eligible part of the complete table. An all-zero run can skip preparation.
-The notebook exposes the same two explicit calls.
+The app calls inference and analysis in sequence. The notebook exposes them as
+separate `run_inference(...)` and `calculate_metrics(...)` sections.
 
-During an experiment, each completed language model's raw predictions are saved
+`run_inference(...)` performs the expensive model work and returns an
+`inference_run` containing the raw prediction table and its analysis context.
+It also saves the combined prediction CSV and the two count CSVs under
+`<output_dir>/incomplete_run/`.
+`calculate_metrics(...)` consumes the object without loading a language model,
+embedding a query, retrieving examples, or generating predictions. After a
+kernel restart, run the notebook setup and configuration cells, set
+`saved_predictions_path` to the previous run's `<split>_predictions.csv`, and
+jump to the metric section. `load_inference_run(...)` reads that CSV and the two
+count CSVs beside it.
+
+After editing metric code or changing only `ranking_metric` or
+`ranking_direction`, rerun just the metric section. Each successful metric
+recalculation creates a new timestamped artifact directory.
+
+During inference, each completed language model's raw predictions are saved
 atomically under `<output_dir>/incomplete_run/`. On restart, an existing model
 CSV is reused and a missing one is computed. This deliberately does not compare
 the current YAML with the cached run, so discard the incomplete run before
-changing experiment settings. Use **Discard incomplete run** in the app or
+changing experiment settings. Likewise, only load a prediction CSV created by
+the same inference configuration; metric code, ranking metric, and ranking
+direction may differ. Use **Discard incomplete run** in the app or
 `discard_incomplete_run(config, PROJECT_ROOT)` in the notebook. After every
-final artifact is written successfully, `incomplete_run/` is deleted automatically.
+final artifact is written successfully,
+`incomplete_run/` is deleted automatically; the completed run retains
+predictions, counts, and configuration
+so metric-only recalculation remains available after a kernel restart.
 
 Completed runs can be displayed without rerunning the experiment. In the app,
 select a directory under **Completed runs** and choose **Load selected run**.
@@ -132,10 +160,11 @@ best-prompt report only—it does not load models or recompute results.
 
 You can also run
 [`Fairness_Aware_ICL_Complete_Pipeline.ipynb`](Fairness_Aware_ICL_Complete_Pipeline.ipynb).
-It starts with the split contract and configuration, displays both composition
-tables, previews the language-model message format, runs the pipeline, and then
-walks through rankings, winners, detailed metrics, plots, prompts, and bounded
-prediction previews.
+It starts with the split contract and compact preflight information, previews
+the exact language-model messages, separates inference from metric calculation,
+then displays only the artifact directory, one winner per language model, and
+one editable factor-contrast summary slice. Complete CSVs and plots are saved
+without being rendered in the notebook.
 
 To benchmark the step-7 embedding batch size separately, run:
 
@@ -162,14 +191,19 @@ Keep `defaults.evaluation_split: validation` while comparing prompts. The
 single `dataset.evaluation_per_profession_gender` setting controls the selected
 split: use 5 rows per profession-gender cell for validation and 10 for test, or
 use `max_balanced` to select the largest equal cell size available. The flow
-prints the resolved integer before embedding. The total is
-`number of professions × 2 × resolved rows per cell`.
+always prints both the maximum balanced capacity and selected value immediately
+before inference begins. The total selected evaluation size is
+`number of professions × 2 × selected rows per cell`.
 The unselected split is loaded only for source composition; it is never passed
 to embedding, prediction, metric calculation, ranking, or plotting.
 
 Important outputs in each timestamped result folder:
 
 - `<split>_results.csv`: every ranked condition and one `is_best` row per language model;
+- `<split>_factor_contrast_details.csv`: every matched one-factor metric delta
+  and zero-shot-to-few-shot composite delta;
+- `<split>_factor_contrast_summary.csv`: overall and per-language-model
+  descriptive aggregates of those deltas;
 - `<split>_predictions.csv`: prompts, retrieved-example metadata, seeds,
   prediction method, generated model output or label scores, and labels;
 - `<split>_best_prompts.txt`: the selected prompt for each language model;
@@ -186,6 +220,49 @@ Summary plots compare every configured condition in within-language-model rank
 order and highlight `is_best`. Detailed target-label, audit-group, fairness,
 coverage, and confusion diagnostics focus on the current split's winner for
 each model; the CSV metric tables retain every condition.
+
+## Factor contrasts
+
+Factor contrasts answer how a metric changes when one configured factor changes
+and every other applicable factor is held fixed. They cover language model,
+prompt name, retrieval method, embedding model, positive example count, and
+example order. Every pair of configured levels is compared in configuration
+order. The detail artifact records the fixed context and raw delta
+`to_metric_value - from_metric_value`; `improvement` reverses that sign for
+lower-is-better difference metrics so a positive value always means improvement.
+
+The summary reports total and defined pair counts, mean source and target values,
+mean and standard deviation of raw deltas, improved/tied/worsened counts, and
+the improved fraction. It contains an overall scope and, for factors other than
+language model, a per-language-model scope. Undefined metric pairs remain
+undefined and are excluded only from defined-pair aggregates.
+
+The detail columns are:
+
+- `contrast_type`, `factor`, `from_factor_value`, and `to_factor_value` identify
+  the comparison;
+- the split, target, audit column, prediction method, language model, and
+  JSON `fixed_context` record its analysis context;
+- `metric`, `direction`, `from_metric_value`, `to_metric_value`, and `delta`
+  store the measured change;
+- `improvement` is the direction-adjusted delta and `outcome` is
+  `improved`, `tied`, `worsened`, or `undefined`;
+- `from_condition_count` and `to_condition_count` expose whether a side is one
+  condition or the averaged few-shot retrieval grid.
+
+The summary retains the comparison identifiers and adds
+`aggregation_scope`, `scope_language_model`, `n_total_pairs`,
+`n_defined_pairs`, `mean_from_metric_value`, `mean_to_metric_value`,
+`mean_delta`, `std_delta`, the three outcome counts, and `improvement_rate`.
+
+Zero-shot is not part of the strict example-count contrast because retrieval
+method, embedding model, and example order become applicable when examples are
+introduced. Its separate `zero_shot_to_few_shot` contrast first averages every
+configured retrieval condition at a positive count within one language-model
+and prompt context, then compares that mean with the corresponding zero-shot
+condition. These are descriptive paired differences, not causal estimates or
+significance tests, and performance and fairness metrics remain separate rather
+than being combined into one score.
 
 ## Metric formulas
 

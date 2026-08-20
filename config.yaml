@@ -123,7 +123,7 @@ prompt_templates:
 inference:
   # Exact values: generated_output | log_probability. This selects one method
   # for the whole run; it is not crossed with the master-prompt conditions.
-  prediction_method: generated_output
+  prediction_method: log_probability
 
   # Non-empty list with unique id values. Models load one at a time. Each entry
   # requires a non-empty Hugging Face ID, non-empty revision, and supported dtype.
@@ -146,6 +146,11 @@ inference:
     - # Same required shape and contracts as the entry above.
       id: allenai/Olmo-3.1-32B-Instruct
       revision: ac0587e4a7744a551c059d8cd17ba220bc940dae
+      dtype: bfloat16
+
+    - # Official BF16 copy of the instruction-tuned Ministral checkpoint.
+      id: mistralai/Ministral-3-14B-Instruct-2512-BF16
+      revision: 3cea74c1ebaf5ce5f5a2553de470e2ceab825142
       dtype: bfloat16
 
   # Exact values: auto | cuda | mps | cpu. Explicit unavailable accelerators

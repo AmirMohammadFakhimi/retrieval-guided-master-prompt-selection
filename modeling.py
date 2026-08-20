@@ -14,7 +14,9 @@ from lancedb.table import LanceTable
 from sentence_transformers import SentenceTransformer
 from tqdm.auto import tqdm
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM as AutoCausalLanguageModel,
+    AutoModelForImageTextToText as AutoMultimodalLanguageModel,
     AutoTokenizer,
     BatchEncoding,
     PreTrainedModel,
@@ -89,7 +91,7 @@ def _warn_about_embedding_input_truncation(
 
 
 def _language_model_context_length(tokenizer: PreTrainedTokenizerBase, language_model: PreTrainedModel) -> int:
-    """Return the Qwen tokenizer limit or Gemma text-model limit."""
+    """Return the tokenizer limit or the underlying text-model limit."""
 
     if tokenizer.model_max_length < UNBOUNDED_TOKENIZER_LENGTH:
         return tokenizer.model_max_length
@@ -593,13 +595,19 @@ def load_language_model(
 ) -> tuple[PreTrainedTokenizerBase, PreTrainedModel]:
     """Load one causal Hugging Face language model."""
 
+    model_config = AutoConfig.from_pretrained(language_model_id, revision=revision)
+    model_loader = AutoCausalLanguageModel
+    if model_config.model_type == 'mistral3':
+        # The official checkpoint wraps its causal text model in a multimodal Mistral3 configuration.
+        model_loader = AutoMultimodalLanguageModel
+
     tokenizer = cast(
         PreTrainedTokenizerBase,
         cast(object, AutoTokenizer.from_pretrained(language_model_id, revision=revision)),
     )
 
     dtype: str | torch.dtype = 'auto' if dtype_name == 'auto' else TORCH_DTYPES[dtype_name]
-    language_model = AutoCausalLanguageModel.from_pretrained(language_model_id, revision=revision, dtype=dtype)
+    language_model = model_loader.from_pretrained(language_model_id, revision=revision, dtype=dtype)
 
     language_model.to(device)
     language_model.eval()
@@ -647,13 +655,20 @@ def _prepare_allowed_label_token_ids(
         raise ValueError('At least one allowed label is required')
 
     context_length = _language_model_context_length(tokenizer, language_model)
-    empty_answer_ids = _apply_chat_template(
-        [
-            *messages,
-            {'role': 'assistant', 'content': ''}
-        ],
-        tokenizer,
-    )
+    if language_model.config.model_type == 'mistral3':
+        # Mistral rejects an empty assistant message, but its completed answers end with EOS.
+        empty_answer_ids = torch.cat((
+            _apply_chat_template(messages, tokenizer),
+            torch.tensor([tokenizer.eos_token_id], dtype=torch.long),
+        ))
+    else:
+        empty_answer_ids = _apply_chat_template(
+            [
+                *messages,
+                {'role': 'assistant', 'content': ''}
+            ],
+            tokenizer,
+        )
     empty_token_ids: list[int] = empty_answer_ids.tolist()
 
     reference_prompt_ids: torch.Tensor | None = None
@@ -762,7 +777,6 @@ def generate_allowed_label(
             generation_eos_token_id = [generation_eos_token_id, end_of_turn_token_id]
         else:
             raise RuntimeError(f'{tokenizer.name_or_path} does not define the OLMo end-of-turn token <|im_end|>')
-
 
     with torch.inference_mode():
         generated_ids = language_model.generate(

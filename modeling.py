@@ -224,7 +224,7 @@ def prepare_training_embedding_cache(
                         batch_size=batch_size,
                         normalize_embeddings=True,
                         convert_to_numpy=True,
-                        show_progress_bar=True,
+                        show_progress_bar=False,
                     )
                 )
 
@@ -331,7 +331,7 @@ def encode_embedding_queries(
                 batch_size=batch_size,
                 normalize_embeddings=True,
                 convert_to_numpy=True,
-                show_progress_bar=True,
+                show_progress_bar=False,
             )
         )
     finally:
@@ -573,17 +573,15 @@ def build_prompt(
     except KeyError as exc:
         raise ValueError('Prompt templates may use only {target}, {audit_column}, and {labels}') from exc
 
-    messages = [
-        {'role': 'system', 'content': instruction}
-    ]
+    messages = [{'role': 'system', 'content': instruction}]
     for example in examples:
         messages.extend([
             {'role': 'user', 'content': render_input(example, target)},
             {'role': 'assistant', 'content': example[target]},
         ])
-    messages.append(
-        {'role': 'user', 'content': render_input(query, target)}
-    )
+
+    messages.append({'role': 'user', 'content': render_input(query, target)})
+
     return messages
 
 
@@ -622,6 +620,7 @@ def _apply_chat_template(messages: list[dict[str, str]], tokenizer: PreTrainedTo
         return_tensors='pt',
         add_generation_prompt=False,
         enable_thinking=False,
+        preserve_thinking=False,
     )
 
     if not isinstance(encoded, Mapping):
@@ -740,6 +739,7 @@ def generate_allowed_label(
             return_tensors='pt',
             add_generation_prompt=True,
             enable_thinking=False,
+            preserve_thinking=False,
         ),
     ).to(device)
     prompt_length = model_inputs['input_ids'].shape[1]
@@ -754,10 +754,21 @@ def generate_allowed_label(
             f'{context_length}-token context limit. Shorten the prompt or reduce retrieval.example_counts.'
         )
 
+    generation_eos_token_id = language_model.generation_config.eos_token_id
+    if language_model.config.model_type == 'olmo3':
+        # OLMo demonstrations end with <|im_end|>, which its final generation config omits.
+        end_of_turn_token_id = tokenizer.get_added_vocab().get('<|im_end|>')
+        if end_of_turn_token_id is not None:
+            generation_eos_token_id = [generation_eos_token_id, end_of_turn_token_id]
+        else:
+            raise RuntimeError(f'{tokenizer.name_or_path} does not define the OLMo end-of-turn token <|im_end|>')
+
+
     with torch.inference_mode():
         generated_ids = language_model.generate(
             **model_inputs,
             do_sample=False,
+            eos_token_id=generation_eos_token_id,
             max_new_tokens=GENERATED_OUTPUT_MAX_NEW_TOKENS,
             return_dict_in_generate=False,
         )

@@ -35,7 +35,7 @@ dataset:
 
   # Exact form: all, or a non-empty unique YAML list containing at least two of
   # the 28 profession names defined in dataset.PROFESSIONS.
-  professions: [professor, physician, attorney, journalist]
+  professions: [attorney, journalist, physician, professor]
 
   # Non-negative integer. Shuffles each source split before it is cached.
   shuffle_seed: 42
@@ -58,7 +58,7 @@ retrieval:
   # Non-empty unique list of non-negative integers, each <= the selected train
   # pool. Zero creates one retrieval-independent condition per language model
   # and prompt; positive values use the configured retrieval controls.
-  example_counts: [2, 8]
+  example_counts: [0, 4, 8]
 
   # Non-empty unique list. Exact values:
   # most_similar_first | most_similar_last | shuffle.
@@ -131,26 +131,21 @@ inference:
   # limit and fail rather than being truncated; no separate context override is
   # accepted here.
   language_models:
-    - # id: non-empty Hugging Face model ID.
-      id: Qwen/Qwen3.6-27B
-      # revision: non-empty Hub commit, tag, or branch string.
-      revision: 6a9e13bd6fc8f0983b9b99948120bc37f49c13e9
-      # Exact values: auto | float32 | float16 | bfloat16.
-      dtype: bfloat16
+#    - # id: non-empty Hugging Face model ID.
+#      id: Qwen/Qwen3.8-27B
+#      # revision: non-empty Hub commit, tag, or branch string.
+#      revision: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+#      # Exact values: auto | float32 | float16 | bfloat16.
+#      dtype: bfloat16
+#
+#    - # Same required shape and contracts as the entry above.
+#      id: google/gemma-4-31B-it
+#      revision: 842da3794eaa0b77d5f08bae87a17459d91ff475
+#      dtype: bfloat16
 
     - # Same required shape and contracts as the entry above.
-      id: Qwen/Qwen3.5-27B
-      revision: fc05daec18b0a78c049392ed2e771dde82bdf654
-      dtype: bfloat16
-
-    - # Same required shape and contracts as the entry above.
-      id: Qwen/Qwen3.6-35B-A3B
-      revision: 995ad96eacd98c81ed38be0c5b274b04031597b0
-      dtype: bfloat16
-
-    - # Same required shape and contracts as the entry above.
-      id: google/gemma-4-31B-it
-      revision: 842da3794eaa0b77d5f08bae87a17459d91ff475
+      id: allenai/Olmo-3.1-32B-Instruct
+      revision: ac0587e4a7744a551c059d8cd17ba220bc940dae
       dtype: bfloat16
 
   # Exact values: auto | cuda | mps | cpu. Explicit unavailable accelerators

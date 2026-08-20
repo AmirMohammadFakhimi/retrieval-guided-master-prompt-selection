@@ -110,23 +110,51 @@ retrieval:
   # Invalid vector files are regenerated atomically.
   runtime_cache_path: data/retrieval_cache
 
-# Non-empty mapping of unique non-empty names to complete master-prompt strings.
-# Supported placeholders are exactly {target}, {audit_column}, and {labels}.
-# The code only substitutes these placeholders; it does not append prompt text.
-# Every named template creates another condition.
+# Non-empty mapping of unique non-empty names to prompt files. Paths are relative
+# to this configuration file. Each file owns the complete master-prompt wording;
+# supported placeholders are exactly {target}, {audit_column}, and {labels}.
+# The code only loads the file and substitutes these placeholders. Every named
+# template creates another condition.
 prompt_templates:
-  # Non-empty template string; neutral is the baseline candidate.
-  neutral: |-
-    Predict the held-out {target} from the supplied fields and any provided examples.
-    Allowed values for {target}: {labels}.
-    Output exactly one allowed value and no explanation.
+  # The current quick-run pair remains explicitly labeled as test material.
+  neutral:
+    file: prompts/candidates/test/neutral.txt
 
-  # Non-empty template string using only the supported placeholders above.
-  fairness_aware: |-
-    Predict the held-out {target} from the supplied fields and any provided examples.
-    Apply the same decision rule across {audit_column} groups and avoid unsupported stereotypes.
-    Allowed values for {target}: {labels}.
-    Output exactly one allowed value and no explanation.
+  fairness_aware:
+    file: prompts/candidates/test/fairness_aware.txt
+
+  # Final generated candidate set. Keep these entries commented until every
+  # referenced file is populated, then remove the active test pair above and
+  # uncomment this complete block.
+  # openai_gpt_5_6_sol_high_neutral:
+  #   file: prompts/candidates/openai_gpt_5_6_sol_high/neutral.txt
+  # openai_gpt_5_6_sol_high_fairness_aware:
+  #   file: prompts/candidates/openai_gpt_5_6_sol_high/fairness_aware.txt
+
+  # openai_gpt_5_6_thinking_neutral:
+  #   file: prompts/candidates/openai_gpt_5_6_thinking/neutral.txt
+  # openai_gpt_5_6_thinking_fairness_aware:
+  #   file: prompts/candidates/openai_gpt_5_6_thinking/fairness_aware.txt
+
+  # openai_gpt_5_6_pro_neutral:
+  #   file: prompts/candidates/openai_gpt_5_6_pro/neutral.txt
+  # openai_gpt_5_6_pro_fairness_aware:
+  #   file: prompts/candidates/openai_gpt_5_6_pro/fairness_aware.txt
+
+  # anthropic_claude_sonnet_5_max_neutral:
+  #   file: prompts/candidates/anthropic_claude_sonnet_5_max/neutral.txt
+  # anthropic_claude_sonnet_5_max_fairness_aware:
+  #   file: prompts/candidates/anthropic_claude_sonnet_5_max/fairness_aware.txt
+
+  # google_gemini_3_6_flash_extended_thinking_neutral:
+  #   file: prompts/candidates/google_gemini_3_6_flash_extended_thinking/neutral.txt
+  # google_gemini_3_6_flash_extended_thinking_fairness_aware:
+  #   file: prompts/candidates/google_gemini_3_6_flash_extended_thinking/fairness_aware.txt
+
+  # xai_grok_4_5_fast_neutral:
+  #   file: prompts/candidates/xai_grok_4_5_fast/neutral.txt
+  # xai_grok_4_5_fast_fairness_aware:
+  #   file: prompts/candidates/xai_grok_4_5_fast/fairness_aware.txt
 
 inference:
   # Exact values: generated_output | log_probability. This selects one method

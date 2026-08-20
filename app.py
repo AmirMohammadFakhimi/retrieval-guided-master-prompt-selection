@@ -345,7 +345,8 @@ the edited YAML, so discard the incomplete run before changing experiment settin
 - `inference.generation_batch_size`: positive run-wide performance setting used
   only by `generated_output`. Larger values reduce generation calls but use more
   accelerator memory; 1 disables batching.
-- Prompt templates support exactly `{target}`, `{audit_column}`, and `{labels}`.
+- Each `prompt_templates` entry names one prompt file relative to the project
+  root. Prompt files support exactly `{target}`, `{audit_column}`, and `{labels}`.
 - `ranking_metric` must name a numeric results column or a documented alias;
   choose `maximize` for quality/ratios and `minimize` for error/differences.
 

@@ -1,0 +1,4 @@
+Predict the held-out {target} from the supplied fields and any provided examples.
+Apply the same decision rule across {audit_column} groups and avoid unsupported stereotypes.
+Allowed values for {target}: {labels}.
+Output exactly one allowed value and no explanation.

@@ -80,8 +80,9 @@ def load_inference_run(
 ) -> dict[str, Any]:
     """Load one saved prediction CSV for metric-only recalculation."""
 
-    configuration.validate_config(config)
     root = Path(project_root).resolve()
+    config = configuration.resolve_prompt_templates(config, root)
+    configuration.validate_config(config)
     path = Path(predictions_path)
     if not path.is_absolute():
         path = root / path
@@ -445,8 +446,9 @@ def prepare_embedding_cache(
 ) -> dict[str, int]:
     """Explicitly prepare all canonical training embeddings for configured models."""
 
-    configuration.validate_config(config)
     root = Path(project_root).resolve()
+    config = configuration.resolve_prompt_templates(config, root)
+    configuration.validate_config(config)
     source_rows = dataset.load_source_rows(config, root)
     training_rows = [row for row in source_rows if row[dataset.Column.SPLIT] == 'train']
     if not training_rows:
@@ -483,8 +485,9 @@ def run_inference(
 ) -> dict[str, Any]:
     """Run model inference only and retain everything needed for metrics."""
 
-    configuration.validate_config(config)
     root = Path(project_root).resolve()
+    config = configuration.resolve_prompt_templates(config, root)
+    configuration.validate_config(config)
     defaults = config['defaults']
     evaluation_split = defaults['evaluation_split']
     target, audit_column, _, target_labels = dataset.task_settings(config)
@@ -697,8 +700,9 @@ def calculate_metrics(
 ) -> dict[str, Any]:
     """Calculate all metrics and artifacts from an existing inference run."""
 
-    configuration.validate_config(config)
     root = Path(project_root).resolve()
+    config = configuration.resolve_prompt_templates(config, root)
+    configuration.validate_config(config)
     defaults = config['defaults']
     evaluation_split = defaults['evaluation_split']
     target_labels = inference_run['target_labels']

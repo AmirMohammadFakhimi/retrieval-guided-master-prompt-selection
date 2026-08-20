@@ -24,11 +24,12 @@ an error instead of silently falling back to CPU.
 
 - `generated_output` renders the chat for an assistant response and generates
   up to 32 new tokens with deterministic greedy decoding (`do_sample=False`).
-  Each configured master prompt contains its complete wording, including the
-  allowed labels and exact-output instruction; the code only substitutes its
+  Each configured prompt file contains the complete master-prompt wording,
+  including the allowed labels and exact-output instruction. Configuration
+  loading reads that text and the prompt builder only substitutes its
   placeholders. After surrounding whitespace is removed and the response is
-  converted to lowercase, any output that is not exactly one allowed label stops
-  the run with the raw response; there is no extraction or retry.
+  converted to lowercase, any output that is not exactly one allowed label
+  stops the run with the raw response; there is no extraction or retry.
 - `log_probability` computes each allowed label's mean conditional token
   log-probability and chooses the largest score. These are relative label scores,
   not calibrated probabilities.
@@ -46,6 +47,8 @@ checked-in value is 2, and 1 disables batching.
 ## Structure
 
 - `configuration.py`: YAML loading and static configuration validation;
+- `prompts/`: the frozen candidate-generation instruction, generated candidate
+  pairs, and prompt-generation protocol;
 - `pipeline.py`: experiment orchestration and artifact writing;
 - `dataset.py`: source loading/normalization, current-run row selection, and
   dataset-composition counting;
@@ -517,5 +520,5 @@ For $P$ master prompts, $R$ retrieval methods, $E$ embedding models, $O$
 example orders, and $K_+$ positive example counts, conditions per language
 model equal $P\left(\mathbf{1}[0\text{ configured}]+R E O K_+\right)$. The
 checked-in configuration therefore has 50 conditions per language model and
-200 total. Its four professions, two genders, and five evaluation rows per
-cell produce 40 evaluation rows and 8,000 row-condition predictions.
+150 total. Its four professions, two genders, and five evaluation rows per
+cell produce 40 evaluation rows and 6,000 row-condition predictions.

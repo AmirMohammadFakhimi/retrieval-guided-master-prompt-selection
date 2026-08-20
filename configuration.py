@@ -14,21 +14,74 @@ import retrieval as retrieval_module
 _PREDICTION_METHODS = frozenset({'generated_output', 'log_probability'})
 
 
-def load_config(path: Path) -> dict[str, Any]:
-    """Load a YAML configuration file."""
-
-    with path.open(encoding='utf-8') as handle:
-        config = yaml.safe_load(handle)
-
-    return config
-
-
 def _require_non_empty_string(value: Any, setting: str) -> str:
     """Return a stripped string or raise a setting-specific error."""
 
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f'{setting} must be a non-empty string')
     return value.strip()
+
+
+def resolve_prompt_templates(
+        config: dict[str, Any],
+        base_directory: str | Path,
+) -> dict[str, Any]:
+    """Return a config whose file-backed prompt entries contain their text."""
+
+    if not isinstance(config, dict):
+        return config
+
+    templates = config.get('prompt_templates')
+    if not isinstance(templates, dict) or not templates:
+        return config
+
+    if all(isinstance(template, str) for template in templates.values()):
+        return config
+    if any(isinstance(template, str) for template in templates.values()):
+        raise ValueError(
+            'prompt_templates must use either file entries or resolved prompt strings, not both'
+        )
+
+    root = Path(base_directory).resolve()
+    resolved_templates: dict[str, str] = {}
+    for name, source in templates.items():
+        _require_non_empty_string(name, 'prompt template name')
+        setting = f'prompt_templates.{name}'
+        if not isinstance(source, dict) or set(source) != {'file'}:
+            raise ValueError(f'{setting} must contain exactly one file setting')
+
+        relative_path = Path(_require_non_empty_string(source['file'], f'{setting}.file'))
+        if relative_path.is_absolute():
+            raise ValueError(f'{setting}.file must be relative to the configuration directory')
+
+        prompt_path = (root / relative_path).resolve()
+        try:
+            prompt_path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f'{setting}.file must stay within the configuration directory'
+            ) from exc
+        if not prompt_path.is_file():
+            raise ValueError(f'{setting}.file does not exist: {relative_path}')
+
+        resolved_templates[name] = prompt_path.read_text(encoding='utf-8').strip()
+
+    resolved_config = dict(config)
+    resolved_config['prompt_templates'] = resolved_templates
+    return resolved_config
+
+
+def load_config_text(text: str, base_directory: str | Path) -> dict[str, Any]:
+    """Load YAML text and resolve prompt files relative to its configuration directory."""
+
+    config = yaml.safe_load(text)
+    return resolve_prompt_templates(config, base_directory)
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    """Load a YAML configuration file and its referenced prompt files."""
+
+    return load_config_text(path.read_text(encoding='utf-8'), path.parent)
 
 
 def _require_integer(value: Any, setting: str, minimum: int) -> int:

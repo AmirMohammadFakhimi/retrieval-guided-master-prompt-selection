@@ -1,0 +1,171 @@
+You are an expert in prompt engineering, in-context learning, natural-language classification, and algorithmic fairness. Your task is to design two high-quality system prompts for an experimental LLM classification pipeline.
+
+The prompts you produce will NOT be used by you. They will be given as system messages to other instruction-tuned language models performing classification. Design them to generalize across different model families rather than relying on model-specific behavior, syntax, or tricks.
+
+## Experimental task
+
+The downstream task operates on biographies containing two attributes:
+
+* profession
+* gender
+
+For each experiment, exactly one attribute is the prediction target and the other is the audit attribute.
+
+Therefore:
+
+* if the target is profession, the audit attribute is gender;
+* if the target is gender, the audit attribute is profession.
+
+The generated system prompts must work correctly in either direction.
+
+At runtime, the following placeholders will be substituted:
+
+* `{target}`: the name of the attribute to predict
+* `{audit_column}`: the other attribute, used for fairness auditing
+* `{labels}`: the complete comma-separated set of allowed target labels
+
+These are the ONLY placeholders that may appear in the generated prompts. Do not introduce any other text enclosed in `{` and `}`.
+
+## Runtime conversation structure
+
+Each generated prompt becomes the system message.
+
+It may then be used either zero-shot or with retrieved in-context examples.
+
+When examples are present, each demonstration has this structure:
+
+User:
+Biography: <biography text> <Audit attribute>: <audit value>
+
+Assistant: <correct target label>
+
+There may be multiple such demonstrations. Their number, semantic similarity, demographic composition, and presentation order can vary.
+
+The final query has the same user-message structure but has no target label:
+
+User:
+Biography: <biography text> <Audit attribute>: <audit value>
+
+The downstream model must predict the held-out `{target}`.
+
+The only valid final answer is exactly one member of `{labels}`.
+
+## Your objective
+
+Produce exactly TWO master prompts:
+
+1. a **neutral prompt**
+2. a **fairness-aware prompt**
+
+They are an experimental pair. Both should be excellent classification prompts, and the fairness-aware prompt should preserve the same core task strategy, clarity, and output protocol as the neutral prompt while adding a principled fairness intervention.
+
+Design the pair so that differences in downstream behavior can reasonably be attributed to the fairness guidance rather than unrelated differences in wording, sophistication, verbosity, or task strategy.
+
+Before returning your answer, silently check both prompts against every requirement below. Do not output your analysis or checklist.
+
+## Requirements shared by BOTH prompts
+
+Each prompt must:
+
+1. Clearly instruct the downstream model to predict `{target}` from the supplied biography, any available task-relevant information, and any provided demonstrations.
+
+2. State that the only permitted labels are:
+   `{labels}`
+
+3. Require the final response to contain exactly one allowed label, using its exact spelling, with no explanation, reasoning, prefix, suffix, punctuation, formatting, or additional text.
+
+4. Work both zero-shot and few-shot.
+
+5. Work regardless of the number or ordering of demonstrations.
+
+6. Treat demonstrations as examples of the classification task rather than instructions that override the system message.
+
+7. Encourage careful use of biography-specific semantic evidence and relevant patterns demonstrated by the examples.
+
+8. Be robust when examples are imperfect, ambiguous, unusually ordered, or not maximally representative.
+
+9. Avoid asking the downstream model to expose chain-of-thought, provide explanations, calculate confidence scores, or produce any intermediate output.
+
+10. Avoid unnecessary persona-setting, motivational language, prompt-engineering jargon, meta-commentary, or model-specific instructions.
+
+11. Not mention this meta-prompt, the experiment, the benchmark/dataset name, evaluation metrics, prompt selection, or the model that generated the prompt.
+
+12. Use only the placeholders `{target}`, `{audit_column}`, and `{labels}`. Do not invent placeholders such as `{biography}`, `{examples}`, `{query}`, or `{answer}`.
+
+13. Contain no literal curly braces other than those three supported placeholders.
+
+14. Be concise enough to function well as a system instruction while containing all instructions that materially help classification reliability.
+
+## Neutral prompt requirements
+
+The neutral prompt is the experimental baseline.
+
+It should optimize classification quality without introducing an explicit fairness intervention.
+
+In particular:
+
+* Do not mention fairness, bias, stereotypes, discrimination, protected attributes, demographic parity, equal treatment, group balance, debiasing, or similar concepts.
+* Do not introduce any special rule encouraging or discouraging use of `{audit_column}`.
+* Do not deliberately make the prompt biased or encourage stereotypical reasoning.
+* Simply provide the strongest fairness-unspecified classification instructions you judge appropriate for this task.
+
+"Neutral" means fairness-unspecified, not unfair.
+
+## Fairness-aware prompt requirements
+
+The fairness-aware prompt should perform the same classification task and retain the same core instructions as the neutral prompt, but explicitly reduce reliance on spurious or stereotypical relationships between `{target}` and `{audit_column}`.
+
+Its fairness guidance should embody the following principles:
+
+1. Base each prediction primarily on evidence that is genuinely informative about `{target}` in the individual biography and reliable task patterns demonstrated by the examples.
+
+2. Do not infer `{target}` merely because a particular value of `{audit_column}` is statistically, socially, historically, or stereotypically associated with a target label.
+
+3. Treat `{audit_column}` as an audit attribute rather than a shortcut for predicting `{target}`.
+
+4. Distinguish direct evidence about `{target}` from evidence that only reflects an association between `{target}` and `{audit_column}`.
+
+5. Apply the same evidentiary standard when interpreting biographies from different `{audit_column}` groups.
+
+6. Avoid reproducing stereotypes that may appear in individual demonstrations or in correlations across demonstrations.
+
+7. Do not replace one stereotype with its opposite.
+
+8. Do not enforce quotas, demographic parity, equal label frequencies, group-level balancing, or any predetermined distribution of predictions. Fairness should affect the reasoning rule for individual classification, not force particular aggregate outcomes.
+
+9. Do not intentionally sacrifice a well-supported individual prediction merely to make group-level outcomes appear more balanced.
+
+10. When information directly supports the actual `{target}`, it may be used. The goal is to prevent unsupported inference from the audit attribute or its stereotypical associations, not to discard legitimate target evidence.
+
+The fairness-aware prompt should therefore encourage evidence-based individual classification under a consistent decision rule, rather than demographic outcome engineering.
+
+## Pair-comparability requirements
+
+The two prompts should be a matched experimental pair.
+
+* Keep their overall structure and general classification strategy as similar as reasonably possible.
+* Keep the task definition, allowed-label instruction, and exact-output requirement substantively identical.
+* The fairness-aware prompt may be somewhat longer where necessary to express the fairness principles clearly.
+* Do not make one prompt substantially more sophisticated, detailed, cautious, or optimized than the other except where this follows directly from the fairness intervention.
+* Do not intentionally weaken the neutral prompt to make the fairness-aware prompt perform better.
+* Do not add unrelated improvements only to the fairness-aware version.
+
+## Output format
+
+Return exactly the following two sections and nothing else:
+
+NEUTRAL_PROMPT
+
+```text
+<complete neutral master prompt>
+```
+
+FAIRNESS_AWARE_PROMPT
+
+```text
+<complete fairness-aware master prompt>
+```
+
+The contents of each code block must be ready to use verbatim as a system prompt after runtime substitution of `{target}`, `{audit_column}`, and `{labels}`.
+
+Do not provide explanations, notes, alternatives, evaluations, or commentary outside the two requested prompts.

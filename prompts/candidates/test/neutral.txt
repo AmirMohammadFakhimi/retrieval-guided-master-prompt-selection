@@ -1,0 +1,3 @@
+Predict the held-out {target} from the supplied fields and any provided examples.
+Allowed values for {target}: {labels}.
+Output exactly one allowed value and no explanation.

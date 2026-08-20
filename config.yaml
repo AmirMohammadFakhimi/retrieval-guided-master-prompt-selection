@@ -53,7 +53,7 @@ dataset:
   # reports both that maximum and the selected value. Total rows = professions
   # * 2 * the selected value.
   # Recommended explicit values: 5 for validation and 10 for test.
-  evaluation_per_profession_gender: 5
+  evaluation_per_profession_gender: 10
 
 retrieval:
   # Non-empty unique list. Exact values: semantic | balanced_semantic.
@@ -68,8 +68,8 @@ retrieval:
   # most_similar_first | most_similar_last | shuffle.
   example_orders: [most_similar_first, most_similar_last, shuffle]
 
-  # Complete tables are built only by the explicit preparation action.
-  # A normal experiment fails with guidance when a table is missing or incomplete.
+  # Complete manifested tables are built only by the explicit preparation action.
+  # A normal experiment fails with guidance when a table is missing or incompatible.
 
   # Non-empty list with unique id values. Each entry requires the seven fields
   # documented below and creates another set of retrieval conditions.
@@ -102,9 +102,13 @@ retrieval:
       dtype: float32
       query_prompt: "Represent this sentence for searching relevant passages: "
 
-  # Non-empty path string. Each embedding-model ID owns one complete reusable
-  # table; preparation replaces it when its row count is incomplete.
+  # Non-empty path string. Each embedding-model ID owns one complete manifested
+  # training table; preparation rebuilds it when it is missing or incompatible.
   lancedb_path: data/lancedb
+
+  # Non-empty path string for fingerprinted evaluation-query vectors and exact
+  # maximum-k retrieval selections. Invalid entries are regenerated atomically.
+  runtime_cache_path: data/retrieval_cache
 
 # Non-empty mapping of unique non-empty names to complete master-prompt strings.
 # Supported placeholders are exactly {target}, {audit_column}, and {labels}.
@@ -128,6 +132,10 @@ inference:
   # Exact values: generated_output | log_probability. This selects one method
   # for the whole run; it is not crossed with the master-prompt conditions.
   prediction_method: generated_output
+
+  # Positive integer. generated_output batches this many rows within each
+  # condition; larger values use more accelerator memory.
+  generation_batch_size: 2
 
   # Non-empty list with unique id values. Models load one at a time. Each entry
   # requires a non-empty Hugging Face ID, non-empty revision, and supported dtype.

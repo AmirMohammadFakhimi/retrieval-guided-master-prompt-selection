@@ -34,6 +34,7 @@ class PredictionContext:
     audit_column: dataset.Column
     target_labels: list[str]
     prediction_method: str
+    generation_batch_size: int
     max_example_count: int
     device: str
     semantic_resources: dict[str, modeling.SemanticResource]
@@ -220,123 +221,151 @@ def _predict_labels_for_condition(
         query_vectors = semantic_resource['evaluation_vectors']
         training_filter = semantic_resource['training_filter']
 
+    if context.prediction_method == 'generated_output':
+        prediction_batch_size = context.generation_batch_size
+    elif context.prediction_method == 'log_probability':
+        prediction_batch_size = 1
+    else:
+        raise RuntimeError(f'Prediction method {context.prediction_method!r} is allowed but not implemented')
+
+    condition_metadata = {
+        'condition': condition['condition'],
+        'target': context.target,
+        'audit_column': context.audit_column,
+        'retrieval_method': retrieval_method,
+        'embedding_model': embedding_model_id,
+        'example_count': example_count,
+        'example_order': condition['example_order'],
+        'prompt_name': condition['prompt_name'],
+        'master_prompt': condition['master_prompt'],
+        'language_model': condition['language_model'],
+        'prediction_method': context.prediction_method,
+        'device': context.device,
+        'example_order_seed': context.example_order_seed,
+        'dataset_shuffle_seed': context.dataset_shuffle_seed,
+    }
     rows: list[dict[str, Any]] = []
-    query_progress_bar = tqdm(
-        evaluation_rows,
-        desc=f'Predicting {context.evaluation_split} rows',
-        unit='row',
-        position=2,
-        leave=False,
-    )
-    for query_index, query in enumerate(query_progress_bar):
-        if example_count == 0:
-            examples = []
-        else:
-            query_vector = query_vectors[query_index]
-            retrieval_key = (retrieval_method, embedding_model_id, query[dataset.Column.ID])
+    with tqdm(
+            total=len(evaluation_rows),
+            desc=f'Predicting {context.evaluation_split} rows',
+            unit='row',
+            position=2,
+            leave=False,
+    ) as query_progress_bar:
+        for start in range(0, len(evaluation_rows), prediction_batch_size):
+            prediction_batch = []
+            stop = min(start + prediction_batch_size, len(evaluation_rows))
+            for query_index in range(start, stop):
+                query = evaluation_rows[query_index]
+                if example_count == 0:
+                    examples = []
+                else:
+                    query_vector = query_vectors[query_index]
+                    retrieval_key = (retrieval_method, embedding_model_id, query[dataset.Column.ID])
 
-            if retrieval_key not in context.retrieval_cache:
-                context.retrieval_cache[retrieval_key] = modeling.retrieve_examples(
-                    retrieval_method,
-                    query_vector,
-                    semantic_table,
-                    training_filter,
-                    context.max_example_count,
-                    context.training_profession_gender_pairs,
-                )
+                    if retrieval_key not in context.retrieval_cache:
+                        context.retrieval_cache[retrieval_key] = modeling.retrieve_examples(
+                            retrieval_method,
+                            query_vector,
+                            semantic_table,
+                            training_filter,
+                            context.max_example_count,
+                            context.training_profession_gender_pairs,
+                        )
 
-            # Balanced retrieval order preserves balanced prefixes. Slice the
-            # requested set before applying its independent prompt-presentation
-            # order so smaller example counts keep those balanced memberships.
-            examples = context.retrieval_cache[retrieval_key][:example_count]
-            examples = modeling.order_examples(
-                examples,
-                condition['example_order'],
-                context.example_order_seed,
-            )
+                    # Balanced retrieval order preserves balanced prefixes. Slice the
+                    # requested set before applying its independent prompt-presentation
+                    # order so smaller example counts keep those balanced memberships.
+                    examples = context.retrieval_cache[retrieval_key][:example_count]
+                    examples = modeling.order_examples(
+                        examples,
+                        condition['example_order'],
+                        context.example_order_seed,
+                    )
 
-        messages = modeling.build_prompt(
-            query,
-            examples,
-            context.target,
-            context.target_labels,
-            condition['master_prompt'],
-        )
-        if context.prediction_method == 'generated_output':
-            try:
-                predicted_label, model_output = modeling.generate_allowed_label(
-                    messages,
+                messages = modeling.build_prompt(
+                    query,
+                    examples,
+                    context.target,
                     context.target_labels,
-                    tokenizer,
-                    language_model,
-                    context.device,
+                    condition['master_prompt'],
                 )
-            except ValueError as exc:
-                raise ValueError(
-                    f'Generated-output prediction failed for language model '
-                    f'{condition['language_model']!r}, condition {condition['condition']!r}, '
-                    f'query {query[dataset.Column.ID]!r}: {exc}'
-                ) from exc
-            label_scores_text = NOT_APPLICABLE
-        elif context.prediction_method == 'log_probability':
-            predicted_label, label_scores = modeling.score_allowed_labels(
-                messages,
-                context.target_labels,
-                tokenizer,
-                language_model,
-                context.device,
-            )
-            model_output = NOT_APPLICABLE
-            label_scores_text = json.dumps(label_scores, sort_keys=True)
-        else:
-            raise RuntimeError(f'Prediction method {context.prediction_method!r} is allowed but not implemented')
+                prediction_batch.append((query, examples, messages))
 
-        condition_metadata = {
-            'condition': condition['condition'],
-            'target': context.target,
-            'audit_column': context.audit_column,
-            'retrieval_method': retrieval_method,
-            'embedding_model': embedding_model_id,
-            'example_count': example_count,
-            'example_order': condition['example_order'],
-            'prompt_name': condition['prompt_name'],
-            'master_prompt': condition['master_prompt'],
-            'language_model': condition['language_model'],
-            'prediction_method': context.prediction_method,
-            'device': context.device,
-            'example_order_seed': context.example_order_seed,
-            'dataset_shuffle_seed': context.dataset_shuffle_seed,
-        }
-        prediction_metadata = {
-            'evaluation_split': context.evaluation_split,
-            'query_id': query[dataset.Column.ID],
-            dataset.Column.HARD_TEXT: query[dataset.Column.HARD_TEXT],
-            dataset.Column.PROFESSION: query[dataset.Column.PROFESSION],
-            dataset.Column.GENDER: query[dataset.Column.GENDER],
-            'true_label': query[context.target],
-            'audit_group': query[context.audit_column],
-            'predicted_label': predicted_label,
-            'prompt': json.dumps(messages, ensure_ascii=False),
-            'model_output': model_output,
-            'label_scores': label_scores_text,
-        }
-        example_metadata = {
-            'examples_used': len(examples),
-            'examples': json.dumps([
-                {
-                    'id': example[dataset.Column.ID],
-                    'profession': example[dataset.Column.PROFESSION],
-                    'gender': example[dataset.Column.GENDER],
-                    'retrieval_score': example['retrieval_score'],
+            if context.prediction_method == 'generated_output':
+                try:
+                    generated_predictions = modeling.generate_allowed_labels(
+                        [messages for _, _, messages in prediction_batch],
+                        context.target_labels,
+                        tokenizer,
+                        language_model,
+                        context.device,
+                    )
+                except modeling.GeneratedOutputError as exc:
+                    query = prediction_batch[exc.batch_index][0]
+                    raise ValueError(
+                        f'Generated-output prediction failed for language model '
+                        f'{condition['language_model']!r}, condition {condition['condition']!r}, '
+                        f'query {query[dataset.Column.ID]!r}: {exc}'
+                    ) from exc
+                except ValueError as exc:
+                    query_ids = [query[dataset.Column.ID] for query, _, _ in prediction_batch]
+                    raise ValueError(
+                        f'Generated-output prediction failed for language model '
+                        f'{condition['language_model']!r}, condition {condition['condition']!r}, '
+                        f'queries {query_ids!r}: {exc}'
+                    ) from exc
+
+                if len(generated_predictions) != len(prediction_batch):
+                    raise RuntimeError('Generated output count does not match the input batch size')
+
+            for batch_index, (query, examples, messages) in enumerate(prediction_batch):
+                if context.prediction_method == 'generated_output':
+                    predicted_label, model_output = generated_predictions[batch_index]
+                    label_scores_text = NOT_APPLICABLE
+                else:
+                    predicted_label, label_scores = modeling.score_allowed_labels(
+                        messages,
+                        context.target_labels,
+                        tokenizer,
+                        language_model,
+                        context.device,
+                    )
+                    model_output = NOT_APPLICABLE
+                    label_scores_text = json.dumps(label_scores, sort_keys=True)
+
+                prediction_metadata = {
+                    'evaluation_split': context.evaluation_split,
+                    'query_id': query[dataset.Column.ID],
+                    dataset.Column.HARD_TEXT: query[dataset.Column.HARD_TEXT],
+                    dataset.Column.PROFESSION: query[dataset.Column.PROFESSION],
+                    dataset.Column.GENDER: query[dataset.Column.GENDER],
+                    'true_label': query[context.target],
+                    'audit_group': query[context.audit_column],
+                    'predicted_label': predicted_label,
+                    'prompt': json.dumps(messages, ensure_ascii=False),
+                    'model_output': model_output,
+                    'label_scores': label_scores_text,
                 }
-                for example in examples
-            ]),
-        }
-        rows.append({
-            **condition_metadata,
-            **prediction_metadata,
-            **example_metadata,
-        })
+                example_metadata = {
+                    'examples_used': len(examples),
+                    'examples': json.dumps([
+                        {
+                            'id': example[dataset.Column.ID],
+                            'profession': example[dataset.Column.PROFESSION],
+                            'gender': example[dataset.Column.GENDER],
+                            'retrieval_score': example['retrieval_score'],
+                        }
+                        for example in examples
+                    ]),
+                }
+                rows.append({
+                    **condition_metadata,
+                    **prediction_metadata,
+                    **example_metadata,
+                })
+
+            query_progress_bar.update(len(prediction_batch))
 
     return rows
 
@@ -571,6 +600,7 @@ def run_inference(
                     audit_column=audit_column,
                     target_labels=target_labels,
                     prediction_method=inference_settings['prediction_method'],
+                    generation_batch_size=inference_settings['generation_batch_size'],
                     max_example_count=max_example_count,
                     device=device,
                     semantic_resources=semantic_resources,
@@ -597,6 +627,15 @@ def run_inference(
                     leave=True,
                 )
                 for condition in condition_progress_bar:
+                    condition_text = f'prompt={condition['prompt_name']} | examples={condition['example_count']}'
+                    if condition['example_count'] > 0:
+                        condition_text += (
+                            f' | retrieval={condition['retrieval_method']}'
+                            f' | embedding={condition['embedding_model']}'
+                            f' | order={condition['example_order']}'
+                        )
+                    condition_progress_bar.set_postfix_str(condition_text)
+
                     model_condition_prediction_tables.append(pd.DataFrame(
                         _predict_labels_for_condition(
                             prediction_context,

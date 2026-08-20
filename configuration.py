@@ -153,6 +153,10 @@ def _validate_retrieval(
         raise ValueError('retrieval.example_orders cannot contain duplicates')
 
     _require_non_empty_string(retrieval.get('lancedb_path'), 'retrieval.lancedb_path')
+    _require_non_empty_string(
+        retrieval.get('runtime_cache_path'),
+        'retrieval.runtime_cache_path',
+    )
     embedding_models = retrieval.get('embedding_models')
     if not isinstance(embedding_models, list) or not embedding_models:
         raise ValueError('retrieval.embedding_models must contain at least one embedding model')
@@ -225,9 +229,10 @@ def _validate_prompts(templates: dict[str, Any]) -> None:
 
 
 def _validate_inference(inference: dict[str, Any]) -> None:
-    """Validate language-model entries and the requested device name."""
+    """Validate prediction controls, language-model entries, and device name."""
 
     _require_enum(inference.get('prediction_method'), 'inference.prediction_method', _PREDICTION_METHODS)
+    _require_integer(inference.get('generation_batch_size'), 'inference.generation_batch_size', 1)
 
     language_models = inference.get('language_models')
     if not isinstance(language_models, list) or not language_models:

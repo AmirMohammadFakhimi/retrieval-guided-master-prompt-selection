@@ -54,6 +54,14 @@ class SemanticResource(TypedDict):
     training_filter: str
 
 
+class GeneratedOutputError(ValueError):
+    """Report which item in a generated-output batch failed validation."""
+
+    def __init__(self, batch_index: int, message: str) -> None:
+        super().__init__(message)
+        self.batch_index = batch_index
+
+
 def _warn_about_embedding_input_truncation(
         encoder: SentenceTransformer,
         rows: list[dict[str, Any]],
@@ -731,14 +739,14 @@ def _prepare_allowed_label_token_ids(
     return reference_prompt_ids, candidate_ids_by_label
 
 
-def generate_allowed_label(
-        messages: list[dict[str, str]],
+def generate_allowed_labels(
+        message_batch: list[list[dict[str, str]]],
         allowed_labels: list[str],
         tokenizer: PreTrainedTokenizerBase,
         language_model: PreTrainedModel,
         device: str,
-) -> tuple[str, str]:
-    """Generate one assistant response and accept only an exact configured label."""
+) -> list[tuple[str, str]]:
+    """Generate batched assistant responses and accept only exact configured labels."""
 
     if not allowed_labels:
         raise ValueError('At least one allowed label is required')
@@ -748,26 +756,35 @@ def generate_allowed_label(
     model_inputs = cast(
         BatchEncoding,
         tokenizer.apply_chat_template(
-            messages,
+            message_batch,
             tokenize=True,
+            padding=True,
             return_dict=True,
             return_tensors='pt',
             add_generation_prompt=True,
             enable_thinking=False,
             preserve_thinking=False,
+            tokenizer_kwargs={
+                'padding_side': 'left',
+                'return_attention_mask': True,
+            },
         ),
-    ).to(device)
-    prompt_length = model_inputs['input_ids'].shape[1]
+    )
+    prompt_width = model_inputs['input_ids'].shape[1]
+    prompt_lengths = model_inputs['attention_mask'].sum(dim=1).tolist()
 
     context_length = _language_model_context_length(tokenizer, language_model)
-    generated_sequence_length = prompt_length + GENERATED_OUTPUT_MAX_NEW_TOKENS
+    for batch_index, prompt_length in enumerate(prompt_lengths):
+        generated_sequence_length = int(prompt_length) + GENERATED_OUTPUT_MAX_NEW_TOKENS
+        if generated_sequence_length > context_length:
+            raise GeneratedOutputError(
+                batch_index,
+                f'The formatted prompt plus {GENERATED_OUTPUT_MAX_NEW_TOKENS} generated tokens contains '
+                f'{generated_sequence_length} tokens, exceeding {tokenizer.name_or_path}\'s '
+                f'{context_length}-token context limit. Shorten the prompt or reduce retrieval.example_counts.',
+            )
 
-    if generated_sequence_length > context_length:
-        raise ValueError(
-            f'The formatted prompt plus {GENERATED_OUTPUT_MAX_NEW_TOKENS} generated tokens contains '
-            f'{generated_sequence_length} tokens, exceeding {tokenizer.name_or_path}\'s '
-            f'{context_length}-token context limit. Shorten the prompt or reduce retrieval.example_counts.'
-        )
+    model_inputs = model_inputs.to(device)
 
     generation_eos_token_id = language_model.generation_config.eos_token_id
     if language_model.config.model_type == 'olmo3':
@@ -788,20 +805,22 @@ def generate_allowed_label(
             return_dict_in_generate=False,
         )
 
-    new_token_ids = generated_ids[0, prompt_length:]
-    raw_output = cast(
-        str,
-        tokenizer.decode(new_token_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False),
-    )
+    new_token_ids = generated_ids[:, prompt_width:]
+    raw_outputs = tokenizer.batch_decode(new_token_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
 
-    predicted_label = raw_output.strip().lower()
-    if predicted_label not in allowed_labels:
-        raise ValueError(
-            f'Language model generated {raw_output!r}; expected exactly one of {allowed_labels!r} '
-            f'after trimming surrounding whitespace and converting to lowercase'
-        )
+    predictions: list[tuple[str, str]] = []
+    for batch_index, raw_output in enumerate(raw_outputs):
+        predicted_label = raw_output.strip().lower()
 
-    return predicted_label, raw_output
+        if predicted_label not in allowed_labels:
+            raise GeneratedOutputError(
+                batch_index,
+                f'Language model generated {raw_output!r}; expected exactly one of {allowed_labels!r} '
+                f'after trimming surrounding whitespace and converting to lowercase',
+            )
+        predictions.append((predicted_label, raw_output))
+
+    return predictions
 
 
 def score_allowed_labels(

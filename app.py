@@ -224,7 +224,7 @@ def load_completed_run(config_text: str, run_directory: str | None):
 
 
 def prepare_from_yaml(config_text: str) -> str:
-    """Prepare complete training embeddings from the edited YAML."""
+    """Prepare complete manifested training-embedding tables from the edited YAML."""
 
     try:
         config = _load_yaml_mapping(config_text, 'The configuration')
@@ -235,7 +235,7 @@ def prepare_from_yaml(config_text: str) -> str:
             for model_id, row_count in row_counts.items()
         ]
         return '\n'.join([
-            'Complete training-embedding caches are ready.  ',
+            'Complete training-embedding tables are ready.  ',
             *prepared_lines,
         ])
     except Exception as exc:
@@ -286,14 +286,15 @@ counts never sends it to an encoder or language model.
         with gr.Accordion('1. Experiment flow and split contract', open=True):
             gr.Markdown(
                 """
-1. If any positive example count is configured, explicitly prepare reusable
-   embeddings for every canonical training row; all-zero runs skip this step.
+1. If any positive example count is configured, explicitly prepare manifested
+   embedding tables for every canonical training row; all-zero runs skip this.
 2. Load profession-filtered `train`, `validation` (source `dev`), and `test`
    rows, then cap the retrieval training pool.
-3. For positive counts, filter the complete vector table to that pool and
-   balance only the evaluation split by profession and gender.
-4. If a model CSV is missing, embed selected evaluation rows only when positive
-   counts need retrieval.
+3. If a model CSV is missing and positive counts need retrieval, reuse or embed
+   the selected evaluation queries, scan each eligible table once, and compute
+   exact exhaustive cosine rankings over every eligible training vector.
+4. Derive and persist both retrieval methods from those complete rankings, then
+   release the retrieval arrays before loading a language model.
 5. Load each missing language model once, predict every condition, then
    atomically save its raw predictions and count tables under
    `<output_dir>/incomplete_run/`.
@@ -332,11 +333,17 @@ the edited YAML, so discard the incomplete run before changing experiment settin
 - `example_counts`: unique non-negative integers. Zero creates one condition
   per language model and prompt with retrieval controls set to
   `not_applicable`; positive counts use the retrieval cross-product.
+- `retrieval.lancedb_path` stores manifested training-embedding tables;
+  `retrieval.runtime_cache_path` stores fingerprinted evaluation-query vectors
+  and exact maximum-count retrieval selections.
 - Embedding dtype: `float32`, `float16`, or `bfloat16`; language-model dtype may
   additionally be `auto`. Device: `auto`, `cuda`, `mps`, or `cpu`.
 - `inference.prediction_method`: `generated_output` uses deterministic free
   generation and lowercase exact-label validation; `log_probability`
   compares the mean conditional token log-probabilities of the allowed labels.
+- `inference.generation_batch_size`: positive run-wide performance setting used
+  only by `generated_output`. Larger values reduce generation calls but use more
+  accelerator memory; 1 disables batching.
 - Prompt templates support exactly `{target}`, `{audit_column}`, and `{labels}`.
 - `ranking_metric` must name a numeric results column or a documented alias;
   choose `maximize` for quality/ratios and `minimize` for error/differences.
@@ -344,7 +351,7 @@ the edited YAML, so discard the incomplete run before changing experiment settin
 For **P** prompt templates, **R** retrieval methods, **E** embedding models,
 **O** example orders, and **K+** positive example counts, conditions per
 language model equal **P × (zero configured + R × E × O × K+)**. Total
-prediction calls also multiply by selected evaluation rows. Language-model
+prediction rows also multiply by selected evaluation rows. Language-model
 context overflows fail explicitly; embedding inputs exceeding their configured
 sequence limit are reported and truncated by the encoder.
 """
@@ -353,12 +360,14 @@ sequence limit are reported and truncated by the encoder.
         with gr.Accordion('3. Methodology and metric formulas'):
             gr.Markdown(
                 r"""
-`semantic` uses the nearest biographies. `balanced_semantic` takes the nearest
-currently feasible rows while balancing profession, gender, and their joint
-cells. After the requested example-count prefix is selected, the similarity
-orders sort that fixed set by retrieval score for prompt presentation; this
-keeps balanced prefixes independent from presentation order. The language
-model receives the complete configured master prompt, zero or more retrieved
+`semantic` takes the nearest biographies from an exact exhaustive cosine
+ranking over every eligible training vector; no approximate search is used.
+`balanced_semantic` takes the nearest currently feasible rows from that same
+complete ranking while balancing profession, gender, and their joint cells.
+After the requested example-count prefix is selected, the similarity orders
+sort that fixed set by retrieval score for prompt presentation; this keeps
+balanced prefixes independent from presentation order. The language model
+receives the complete configured master prompt, zero or more retrieved
 user/assistant demonstrations, then the evaluation biography. The code only
 substitutes the prompt placeholders; it does not append prompt wording. At zero
 examples, the message list contains only the system instruction and evaluation

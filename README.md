@@ -38,6 +38,11 @@ does not use temperature. These two methods are different experimental methods,
 so switch them only between deliberate runs rather than treating them as prompt
 conditions.
 
+`inference.generation_batch_size` is a positive run-wide performance setting
+used only by `generated_output`. It batches rows within each condition; larger
+values reduce generation calls but require more accelerator memory. The
+checked-in value is 2, and 1 disables batching.
+
 ## Structure
 
 - `configuration.py`: YAML loading and static configuration validation;
@@ -63,12 +68,16 @@ data-loading boundary, not permission to evaluate every split.
 
 `prepare_embedding_cache(config, root)` is the explicit one-time preparation
 step. It embeds every canonical source-training row for each configured,
-revision-pinned embedding model. Training rows are stably sorted from longest
-to shortest before they are divided into bounded input chunks. LanceDB stores
-that length order while each row's `train_order` retains its canonical source
-position. Its tables are independent of `dataset.professions` and
-`dataset.train_size`. Inputs exceeding an embedding model's configured sequence
-limit are reported by row ID and token count, then truncated by that encoder.
+revision-pinned embedding model. Each model owns one manifested LanceDB table;
+an unmanifested, missing, or incompatible table is rebuilt rather than reused.
+New tables are compacted after creation, and reused tables are compacted only
+when their fragment count exceeds 20. Training
+rows are stably sorted from longest to shortest before they are divided into
+bounded input chunks. LanceDB stores that length order while each row's
+`train_order` retains its canonical source position. Its tables are independent
+of `dataset.professions` and `dataset.train_size`. Inputs exceeding an embedding
+model's configured sequence limit are reported by row ID and token count, then
+truncated by that encoder.
 
 `select_run_data(config, split_rows)` applies `dataset.train_size`, verifies
 that every retrieval example count fits the selected train pool, and returns
@@ -78,12 +87,17 @@ rows; `max_balanced` resolves to the smallest available cell in only
 `defaults.evaluation_split`. Every run reports both the maximum and selected
 values before inference.
 
-`semantic` retrieves exact cosine-nearest rows. `balanced_semantic` greedily
-selects the nearest currently feasible rows while balancing profession,
-gender, and their joint cells; its selection sequence intentionally preserves
-balanced prefixes for smaller example counts. Only after the requested prefix
-is sliced, `most_similar_first` or `most_similar_last` stably sorts that fixed
-set by `retrieval_score` for prompt presentation. `shuffle` instead applies the
+For each embedding model, every selected evaluation query is compared with
+every eligible training vector using true cosine similarity in fixed blocks of
+64. A stable descending ranking preserves LanceDB scan position for exact-score
+ties; no approximate search, quantization, or reduced-dimensional index is
+used. `semantic` takes the nearest rows from that complete ranking.
+`balanced_semantic` greedily selects the nearest currently feasible rows from
+the same ranking while balancing profession, gender, and their joint cells; its
+selection sequence intentionally preserves balanced prefixes for smaller
+example counts. Only after the requested prefix is sliced,
+`most_similar_first` or `most_similar_last` stably sorts that fixed set by
+`retrieval_score` for prompt presentation. `shuffle` instead applies the
 configured deterministic example-order seed. An example count of zero creates
 one zero-shot condition per language model and master prompt. It supplies no
 demonstrations and records retrieval method, embedding model, and example order
@@ -97,13 +111,20 @@ implementation. It creates two different views during a run:
 - `run_dataset_counts`: the capped train pool plus only the configured
   evaluation rows, which is authoritative for rows used by the experiment.
 
-When any positive example count is configured, an experiment opens the complete
-tables read-only, filters professions first, then applies numeric `train_size`
-as the first matching rows in the normalized dataset's fixed shuffled order.
-Changing professions, target, prompts, or the train cap does not rebuild
-embeddings. A missing or incomplete required cache stops the run with an
-instruction to prepare it explicitly. An all-zero run skips table opening and
-evaluation-query embedding entirely.
+When any positive example count is configured and a language-model checkpoint
+is missing, an experiment opens the complete tables read-only, filters
+professions first, then applies numeric `train_size` as the first matching rows
+in the normalized dataset's fixed shuffled order. Before loading a language
+model, it reuses or creates fingerprinted evaluation-query vectors and exact
+maximum-count retrieval selections under `retrieval.runtime_cache_path`.
+Malformed or stale runtime entries are ignored and regenerated atomically; the
+large scan, vector, score, and ranking arrays are released before language-model
+loading. Changing professions, target, prompts, or the train cap does not
+rebuild training embeddings, although inputs that affect query vectors or the
+eligible retrieval pool invalidate the corresponding runtime entry. A missing
+or incompatible training table stops the run with an instruction to prepare it
+explicitly. An all-zero run, or a fully resumed run with no missing model CSV,
+skips table opening, evaluation-query embedding, and retrieval entirely.
 
 ## Setup and run
 
@@ -118,15 +139,15 @@ python app.py
 
 Before a run containing positive example counts, select **Prepare all training
 embeddings**. When a language model CSV is missing, **Run configured split**
-embeds only the selected evaluation queries and retrieves exact neighbors from
-the eligible part of the complete table. An all-zero run can skip preparation.
-The app calls inference and analysis in sequence. The notebook exposes them as
-separate `run_inference(...)` and `calculate_metrics(...)` sections.
+prepares or reuses every exact retrieval selection before loading the language
+model. An all-zero run can skip preparation. The app calls inference and
+analysis in sequence. The notebook exposes them as separate
+`run_inference(...)` and `calculate_metrics(...)` sections.
 
-`run_inference(...)` performs the expensive model work and returns an
-`inference_run` containing the raw prediction table and its analysis context.
-It also saves the combined prediction CSV and the two count CSVs under
-`<output_dir>/incomplete_run/`.
+`run_inference(...)` prepares any required exact retrieval cache, performs the
+expensive model work, and returns an `inference_run` containing the raw
+prediction table and its analysis context. It also saves the combined
+prediction CSV and the two count CSVs under `<output_dir>/incomplete_run/`.
 `calculate_metrics(...)` consumes the object without loading a language model,
 embedding a query, retrieving examples, or generating predictions. After a
 kernel restart, run the notebook setup and configuration cells, set

@@ -783,6 +783,7 @@ def generate_allowed_label(
             **model_inputs,
             do_sample=False,
             eos_token_id=generation_eos_token_id,
+            max_length=None,
             max_new_tokens=GENERATED_OUTPUT_MAX_NEW_TOKENS,
             return_dict_in_generate=False,
         )

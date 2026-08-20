@@ -13,9 +13,11 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 import configuration
 import dataset
+import embeddings
 import evaluation
 import modeling
 import plotting
+import retrieval
 
 RetrievalCache = dict[tuple[str, str, str], list[dict[str, Any]]]
 INCOMPLETE_RUN_DIRECTORY = 'incomplete_run'
@@ -186,7 +188,7 @@ def _prepare_retrieval_cache(
 ) -> RetrievalCache:
     """Prepare run-local exact maximum-k selections one embedding model at a time."""
 
-    training_rows_digest = modeling.fingerprint_rows(complete_training_rows)
+    training_rows_digest = embeddings.fingerprint_rows(complete_training_rows)
     training_by_id = {
         str(row[dataset.Column.ID]): row
         for row in training_rows
@@ -200,14 +202,14 @@ def _prepare_retrieval_cache(
         unit='model',
     )
     for embedding_model in progress_bar:
-        training_table = modeling.open_training_embedding_table(
+        training_table = embeddings.open_training_embedding_table(
             complete_training_rows,
             embedding_model,
             database_path,
             training_rows_digest,
         )
         try:
-            retrieval_cache.update(modeling.prepare_exact_retrievals(
+            retrieval_cache.update(retrieval.prepare_exact_retrievals(
                 training_table,
                 training_by_id,
                 training_filter,
@@ -289,7 +291,7 @@ def _predict_labels_for_condition(
                     # requested set before applying its independent prompt-presentation
                     # order so smaller example counts keep those balanced memberships.
                     examples = context.retrieval_cache[retrieval_key][:example_count]
-                    examples = modeling.order_examples(
+                    examples = retrieval.order_examples(
                         examples,
                         condition['example_order'],
                         context.example_order_seed,
@@ -456,11 +458,11 @@ def prepare_embedding_cache(
     progress(f'Preparing {len(training_rows)} canonical training rows')
 
     row_counts: dict[str, int] = {}
-    training_rows_digest = modeling.fingerprint_rows(training_rows)
+    training_rows_digest = embeddings.fingerprint_rows(training_rows)
     embedding_models = config['retrieval']['embedding_models']
     progress_bar = tqdm(embedding_models, desc='Preparing complete embedding tables', unit='model')
     for embedding_model in progress_bar:
-        table = modeling.prepare_training_embedding_table(
+        table = embeddings.prepare_training_embedding_table(
             training_rows,
             embedding_model,
             device,
@@ -572,7 +574,7 @@ def run_inference(
                 if max_example_count > 0:
                     complete_training_rows = [row for row in source_rows if row[dataset.Column.SPLIT] == 'train']
                     database_path = root / config['retrieval']['lancedb_path']
-                    training_filter = modeling.build_training_filter(train, dataset.train_size_limit(config))
+                    training_filter = retrieval.build_training_filter(train, dataset.train_size_limit(config))
                     runtime_cache_path = root / config['retrieval']['runtime_cache_path']
                     training_profession_gender_pairs = tuple(sorted(
                         {(row[dataset.Column.PROFESSION], row[dataset.Column.GENDER]) for row in train}

@@ -49,7 +49,12 @@ checked-in value is 2, and 1 disables batching.
 - `pipeline.py`: experiment orchestration and artifact writing;
 - `dataset.py`: source loading/normalization, current-run row selection, and
   dataset-composition counting;
-- `modeling.py`: retrieval, prompt construction, and language model prediction;
+- `embeddings.py`: embedding encoders, manifested LanceDB training tables, and
+  evaluation-query-vector caching;
+- `retrieval.py`: exact semantic retrieval, balanced selection, and example
+  presentation ordering;
+- `modeling.py`: device and model lifecycle, prompt construction, and language
+  model prediction;
 - `evaluation.py`: metrics, ranking, and selected-prompt reporting;
 - `plotting.py`: current-split condition comparisons and metric diagnostics;
 - `app.py`: teaching-oriented YAML editor with separate ranking, metric,

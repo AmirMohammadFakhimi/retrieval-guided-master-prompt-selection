@@ -6,6 +6,7 @@ import pandas as pd
 
 import configuration
 import dataset
+import embeddings
 import modeling
 
 BATCH_SIZES = (1, 2, 4, 8, 16, 32, 64, 128, 256)
@@ -29,10 +30,10 @@ def main() -> None:
     for embedding_model in config['retrieval']['embedding_models']:
         model_id = embedding_model['id']
         steps = STEPS_BY_MODEL[model_id]
-        encoder = modeling._load_embedding_encoder(embedding_model, device)
-        modeling._warn_about_embedding_input_truncation(
+        encoder = embeddings._load_embedding_encoder(embedding_model, device)
+        embeddings._warn_about_embedding_input_truncation(
             encoder,
-            length_sorted_training_rows[:steps * modeling.LANCEDB_INGEST_BATCH_SIZE],
+            length_sorted_training_rows[:steps * embeddings.LANCEDB_INGEST_BATCH_SIZE],
             model_id,
             embedding_model['max_sequence_length'],
             'benchmark training-document',
@@ -50,8 +51,8 @@ def main() -> None:
                 )
 
                 for step in range(1, steps + 1):
-                    start = (step - 1) * modeling.LANCEDB_INGEST_BATCH_SIZE
-                    texts = length_sorted_training_texts[start:start + modeling.LANCEDB_INGEST_BATCH_SIZE]
+                    start = (step - 1) * embeddings.LANCEDB_INGEST_BATCH_SIZE
+                    texts = length_sorted_training_texts[start:start + embeddings.LANCEDB_INGEST_BATCH_SIZE]
 
                     started = perf_counter()
                     encoder.encode(

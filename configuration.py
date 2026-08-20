@@ -9,6 +9,7 @@ import yaml
 import dataset
 import evaluation
 import modeling
+import retrieval as retrieval_module
 
 _PREDICTION_METHODS = frozenset({'generated_output', 'log_probability'})
 
@@ -119,11 +120,11 @@ def _validate_retrieval(
         raise ValueError('retrieval.methods must be a non-empty list')
     if any(not isinstance(method, str) or not method.strip() for method in methods):
         raise ValueError('retrieval.methods entries must be non-empty strings')
-    unknown_methods = sorted(set(methods) - modeling.RETRIEVAL_METHODS)
+    unknown_methods = sorted(set(methods) - retrieval_module.RETRIEVAL_METHODS)
     if unknown_methods:
         raise ValueError(
             f'Unknown retrieval methods {unknown_methods}; expected values from '
-            f'{sorted(modeling.RETRIEVAL_METHODS)}'
+            f'{sorted(retrieval_module.RETRIEVAL_METHODS)}'
         )
     if len(methods) != len(set(methods)):
         raise ValueError('retrieval.methods cannot contain duplicates')
@@ -143,11 +144,11 @@ def _validate_retrieval(
         raise ValueError('retrieval.example_orders must be a non-empty list')
     if any(not isinstance(order, str) or not order.strip() for order in orders):
         raise ValueError('retrieval.example_orders entries must be non-empty strings')
-    unknown_orders = sorted(set(orders) - modeling.EXAMPLE_ORDERS)
+    unknown_orders = sorted(set(orders) - retrieval_module.EXAMPLE_ORDERS)
     if unknown_orders:
         raise ValueError(
             f'Unknown example orders {unknown_orders}; expected values from '
-            f'{sorted(modeling.EXAMPLE_ORDERS)}'
+            f'{sorted(retrieval_module.EXAMPLE_ORDERS)}'
         )
     if len(orders) != len(set(orders)):
         raise ValueError('retrieval.example_orders cannot contain duplicates')

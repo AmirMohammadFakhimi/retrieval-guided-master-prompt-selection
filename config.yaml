@@ -53,7 +53,7 @@ dataset:
   # reports both that maximum and the selected value. Total rows = professions
   # * 2 * the selected value.
   # Recommended explicit values: 5 for validation and 10 for test.
-  evaluation_per_profession_gender: 5
+  evaluation_per_profession_gender: 10
 
 retrieval:
   # Non-empty unique list. Exact values: semantic | balanced_semantic.
@@ -117,45 +117,44 @@ retrieval:
 # template creates another condition.
 prompt_templates:
   # The current quick-run pair remains explicitly labeled as test material.
-  neutral:
-    file: prompts/candidates/test/neutral.txt
-
-  fairness_aware:
-    file: prompts/candidates/test/fairness_aware.txt
+#  neutral:
+#    file: prompts/candidates/test/neutral.txt
+#
+#  fairness_aware:
+#    file: prompts/candidates/test/fairness_aware.txt
 
   # Final generated candidate set. Keep these entries commented until every
   # referenced file is populated, then remove the active test pair above and
   # uncomment this complete block.
-  # openai_gpt_5_6_sol_pro_neutral:
-  #   file: prompts/candidates/openai_gpt_5_6_sol_pro/neutral.txt
-  # openai_gpt_5_6_pro_fairness_aware:
-  #   file: prompts/candidates/openai_gpt_5_6_sol_pro/fairness_aware.txt
-  
-  # openai_gpt_5_6_sol_high_neutral:
-  #   file: prompts/candidates/openai_gpt_5_6_sol_high/neutral.txt
-  # openai_gpt_5_6_sol_high_fairness_aware:
-  #   file: prompts/candidates/openai_gpt_5_6_sol_high/fairness_aware.txt
+   openai_gpt_5_6_sol_pro_neutral:
+     file: prompts/candidates/openai_gpt_5_6_sol_pro/neutral.txt
+   openai_gpt_5_6_pro_fairness_aware:
+     file: prompts/candidates/openai_gpt_5_6_sol_pro/fairness_aware.txt
 
-  # openai_gpt_5_6_thinking_neutral:
-  #   file: prompts/candidates/openai_gpt_5_6_thinking/neutral.txt
-  # openai_gpt_5_6_thinking_fairness_aware:
-  #   file: prompts/candidates/openai_gpt_5_6_thinking/fairness_aware.txt
+   openai_gpt_5_6_sol_high_neutral:
+     file: prompts/candidates/openai_gpt_5_6_sol_high/neutral.txt
+   openai_gpt_5_6_sol_high_fairness_aware:
+     file: prompts/candidates/openai_gpt_5_6_sol_high/fairness_aware.txt
 
+   openai_gpt_5_6_thinking_neutral:
+     file: prompts/candidates/openai_gpt_5_6_thinking/neutral.txt
+   openai_gpt_5_6_thinking_fairness_aware:
+     file: prompts/candidates/openai_gpt_5_6_thinking/fairness_aware.txt
 
-  # anthropic_claude_sonnet_5_max_neutral:
-  #   file: prompts/candidates/anthropic_claude_sonnet_5_max/neutral.txt
-  # anthropic_claude_sonnet_5_max_fairness_aware:
-  #   file: prompts/candidates/anthropic_claude_sonnet_5_max/fairness_aware.txt
+   anthropic_claude_sonnet_5_max_neutral:
+     file: prompts/candidates/anthropic_claude_sonnet_5_max/neutral.txt
+   anthropic_claude_sonnet_5_max_fairness_aware:
+     file: prompts/candidates/anthropic_claude_sonnet_5_max/fairness_aware.txt
 
-  # google_gemini_3_6_flash_extended_thinking_neutral:
-  #   file: prompts/candidates/google_gemini_3_6_flash_extended_thinking/neutral.txt
-  # google_gemini_3_6_flash_extended_thinking_fairness_aware:
-  #   file: prompts/candidates/google_gemini_3_6_flash_extended_thinking/fairness_aware.txt
+   google_gemini_3_6_flash_extended_thinking_neutral:
+     file: prompts/candidates/google_gemini_3_6_flash_extended_thinking/neutral.txt
+   google_gemini_3_6_flash_extended_thinking_fairness_aware:
+     file: prompts/candidates/google_gemini_3_6_flash_extended_thinking/fairness_aware.txt
 
-  # xai_grok_4_5_fast_neutral:
-  #   file: prompts/candidates/xai_grok_4_5_fast/neutral.txt
-  # xai_grok_4_5_fast_fairness_aware:
-  #   file: prompts/candidates/xai_grok_4_5_fast/fairness_aware.txt
+   xai_grok_4_5_fast_neutral:
+     file: prompts/candidates/xai_grok_4_5_fast/neutral.txt
+   xai_grok_4_5_fast_fairness_aware:
+     file: prompts/candidates/xai_grok_4_5_fast/fairness_aware.txt
 
 inference:
   # Exact values: generated_output | log_probability. This selects one method
@@ -164,7 +163,7 @@ inference:
 
   # Positive integer. generated_output batches this many rows within each
   # condition; larger values use more accelerator memory.
-  generation_batch_size: 2
+  generation_batch_size: 1
 
   # Non-empty list with unique id values. Models load one at a time. Each entry
   # requires a non-empty Hugging Face ID, non-empty revision, and supported dtype.

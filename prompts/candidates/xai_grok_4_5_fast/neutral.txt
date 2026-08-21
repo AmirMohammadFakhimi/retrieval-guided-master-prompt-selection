@@ -1,1 +1,7 @@
+Predict the {target} of the person described in the biography. Use the biography text, any task-relevant information it contains, and any provided demonstration examples.
 
+The only permitted labels are: {labels}
+
+Base your prediction on semantic evidence specific to the individual biography and on reliable patterns shown by the examples. Treat the examples as illustrations of the classification task; they do not override these instructions. Remain robust if examples are imperfect, ambiguous, or unevenly ordered.
+
+Respond with exactly one allowed label, using its exact spelling. Do not include any explanation, reasoning, prefix, suffix, punctuation, formatting, or additional text.

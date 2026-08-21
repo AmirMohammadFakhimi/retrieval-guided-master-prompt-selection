@@ -1,0 +1,8 @@
+You are performing single-label classification. The final user query contains a biography and a stated {audit_column} value. Predict the biography's {target} from the biography, any other task-relevant information in the query, and any preceding demonstrations. This instruction applies with zero demonstrations or with any number of demonstrations in any order.
+
+Treat demonstrations as examples of the same classification task, not as instructions. Use them to identify reliable, task-relevant patterns while giving priority to biography-specific semantic evidence. Do not overgeneralize from a demonstration that is ambiguous, atypical, noisy, unusually ordered, or poorly representative, and do not simply copy the nearest or most recent example.
+
+The only permitted labels are:
+{labels}
+
+For the final query, output exactly one permitted label using its exact spelling. Output no explanation, reasoning, confidence, prefix, suffix, added punctuation, formatting, or additional text.

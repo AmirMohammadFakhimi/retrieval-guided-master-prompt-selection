@@ -126,6 +126,11 @@ prompt_templates:
   # Final generated candidate set. Keep these entries commented until every
   # referenced file is populated, then remove the active test pair above and
   # uncomment this complete block.
+  # openai_gpt_5_6_sol_pro_neutral:
+  #   file: prompts/candidates/openai_gpt_5_6_sol_pro/neutral.txt
+  # openai_gpt_5_6_pro_fairness_aware:
+  #   file: prompts/candidates/openai_gpt_5_6_sol_pro/fairness_aware.txt
+  
   # openai_gpt_5_6_sol_high_neutral:
   #   file: prompts/candidates/openai_gpt_5_6_sol_high/neutral.txt
   # openai_gpt_5_6_sol_high_fairness_aware:
@@ -136,10 +141,6 @@ prompt_templates:
   # openai_gpt_5_6_thinking_fairness_aware:
   #   file: prompts/candidates/openai_gpt_5_6_thinking/fairness_aware.txt
 
-  # openai_gpt_5_6_pro_neutral:
-  #   file: prompts/candidates/openai_gpt_5_6_pro/neutral.txt
-  # openai_gpt_5_6_pro_fairness_aware:
-  #   file: prompts/candidates/openai_gpt_5_6_pro/fairness_aware.txt
 
   # anthropic_claude_sonnet_5_max_neutral:
   #   file: prompts/candidates/anthropic_claude_sonnet_5_max/neutral.txt

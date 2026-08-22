@@ -61,19 +61,26 @@ def _completed_run_choices(config_text: str) -> list[tuple[str, str]]:
     choices: list[tuple[str, str]] = []
     for run_dir in run_dirs:
         config_path = run_dir / 'config_used.yaml'
-        best_prompt_paths = list(run_dir.glob('*_best_prompts.txt'))
-        if not config_path.is_file() or not best_prompt_paths:
+        if not config_path.is_file():
             continue
 
-        label = run_dir.name
         try:
             archived_config = _load_yaml_mapping(
                 config_path.read_text(encoding='utf-8'),
                 f'{config_path}',
             )
-            label = f'{run_dir.name} — target: {archived_config["defaults"]["target"]}'
         except Exception:
-            pass
+            continue
+        defaults = archived_config['defaults']
+        evaluation_split = defaults['evaluation_split']
+        required_reports = (
+            run_dir / f'{evaluation_split}_best_quality_prompts.txt',
+            run_dir / f'{evaluation_split}_best_fairness_prompts.txt',
+        )
+        if not all(report.is_file() for report in required_reports):
+            continue
+
+        label = f'{run_dir.name} — target: {defaults["target"]}'
         choices.append((label, str(run_dir.resolve())))
 
     return choices
@@ -100,27 +107,79 @@ def _present_output(
 
     evaluation_split = output['evaluation_split']
     results = output['results'].copy()
-    selected = results.loc[results['is_best'].astype(bool)].copy()
+    quality_selected = results.loc[results['is_quality_best'].astype(bool)].copy()
+    fairness_selected = results.loc[results['is_fairness_best'].astype(bool)].copy()
+    selected_conditions = results.loc[
+        results['is_quality_best'].astype(bool)
+        | results['is_fairness_best'].astype(bool)
+    ].copy()
     language_model_ids = [
         entry['id'] for entry in config['inference']['language_models']
     ]
     if (
-            len(selected) != len(language_model_ids)
-            or selected['language_model'].nunique() != len(language_model_ids)
-            or set(selected['language_model']) != set(language_model_ids)
+            set(quality_selected['language_model']) != set(language_model_ids)
+            or not quality_selected['quality_rank'].eq(1).all()
     ):
-        raise ValueError(f'Expected exactly one best {evaluation_split} condition per language model')
+        raise ValueError(
+            f'Expected at least one quality-rank-1 {evaluation_split} condition '
+            f'per language model'
+        )
+    if not fairness_selected['fairness_rank'].eq(1).all():
+        raise ValueError('Every fairness-selected condition must have fairness_rank=1')
 
-    configured_metric = config['defaults']['ranking_metric']
-    metric_column = evaluation.resolve_metric_column(configured_metric)
-    selection_lines = []
+    defaults = config['defaults']
+    quality_metric = defaults['quality_metric']
+    quality_metric_column = evaluation.resolve_metric_column(quality_metric)
+    fairness_metric = defaults['fairness_metric']
+    fairness_metric_column = evaluation.resolve_metric_column(fairness_metric)
+    quality_selection_lines = []
+    fairness_selection_lines = []
     for language_model_id in language_model_ids:
-        row = selected.loc[
-            selected['language_model'].eq(language_model_id)
-        ].iloc[0]
-        selection_lines.append(
-            f'- **{language_model_id}**: rank 1 with '
-            f'`{configured_metric}={row[metric_column]}`'
+        model_quality_selected = quality_selected.loc[
+            quality_selected['language_model'].eq(language_model_id)
+        ]
+        quality_values = model_quality_selected[
+            quality_metric_column
+        ].drop_duplicates()
+        if len(quality_values) != 1:
+            raise ValueError(
+                f'Quality-rank-1 conditions for {language_model_id!r} do not '
+                f'share one exact {quality_metric!r} value'
+            )
+        quality_tie_count = len(model_quality_selected)
+        quality_condition_word = (
+            'condition' if quality_tie_count == 1 else 'conditions'
+        )
+        quality_selection_lines.append(
+            f'- **{language_model_id}**: {quality_tie_count} '
+            f'{quality_condition_word} tied at quality rank 1 with '
+            f'`{quality_metric}={quality_values.iloc[0]}`'
+        )
+
+        model_fairness_selected = fairness_selected.loc[
+            fairness_selected['language_model'].eq(language_model_id)
+        ]
+        if model_fairness_selected.empty:
+            fairness_selection_lines.append(
+                f'- **{language_model_id}**: no defined fairness winner'
+            )
+            continue
+        fairness_values = model_fairness_selected[
+            fairness_metric_column
+        ].drop_duplicates()
+        if len(fairness_values) != 1:
+            raise ValueError(
+                f'Fairness-rank-1 conditions for {language_model_id!r} do not '
+                f'share one exact {fairness_metric!r} value'
+            )
+        fairness_tie_count = len(model_fairness_selected)
+        fairness_condition_word = (
+            'condition' if fairness_tie_count == 1 else 'conditions'
+        )
+        fairness_selection_lines.append(
+            f'- **{language_model_id}**: {fairness_tie_count} '
+            f'{fairness_condition_word} tied at fairness rank 1 with '
+            f'`{fairness_metric}={fairness_values.iloc[0]}`'
         )
 
     prediction_columns = [
@@ -142,8 +201,12 @@ def _present_output(
         'example_order',
         'prompt_name',
     ]
-    selected_predictions = output['predictions'].loc[
-        output['predictions']['condition'].isin(selected['condition']),
+    quality_selected_predictions = output['predictions'].loc[
+        output['predictions']['condition'].isin(quality_selected['condition']),
+        prediction_columns,
+    ]
+    fairness_selected_predictions = output['predictions'].loc[
+        output['predictions']['condition'].isin(fairness_selected['condition']),
         prediction_columns,
     ]
     plot_gallery = [
@@ -159,24 +222,31 @@ def _present_output(
         resumed = ', '.join(resumed_language_models) if resumed_language_models else 'none'
         status_lines.append(f'Resumed completed models: `{resumed}`  ')
     status_lines.extend([
-        f'Ranking metric: `{configured_metric}` '
-        f'(`{config["defaults"]["ranking_direction"]}`)  ',
+        f'Quality metric: `{quality_metric}` (`{defaults["quality_direction"]}`)  ',
+        f'Fairness metric: `{fairness_metric}` '
+        f'(`{defaults["fairness_direction"]}`)  ',
         '',
-        *selection_lines,
+        '**Quality winners**',
+        *quality_selection_lines,
         '',
-        f'Best-prompt report: `{output["best_prompts"]}`  ',
+        '**Fairness winners**',
+        *fairness_selection_lines,
+        '',
+        f'Best-quality-prompt report: `{output["best_quality_prompts"]}`  ',
+        f'Best-fairness-prompt report: `{output["best_fairness_prompts"]}`  ',
         f'UI tables show at most {TABLE_PREVIEW_ROWS} rows; CSV files are complete.',
     ])
 
     return (
         '\n'.join(status_lines),
-        selected,
+        selected_conditions,
         _preview(results),
         _preview(output['target_label_metrics']),
         _preview(output['fairness_metrics']),
         _preview(output['audit_group_metrics']),
         _preview(output['confusion_matrix']),
-        _preview(selected_predictions),
+        _preview(quality_selected_predictions),
+        _preview(fairness_selected_predictions),
         _preview(output['source_dataset_counts']),
         _preview(output['run_dataset_counts']),
         plot_gallery,
@@ -216,11 +286,16 @@ def load_completed_run(config_text: str, run_directory: str | None):
                 path.stem: path
                 for path in sorted((run_dir / 'plots').glob('*.png'))
             },
-            'best_prompts': run_dir / f'{evaluation_split}_best_prompts.txt',
+            'best_quality_prompts': (
+                run_dir / f'{evaluation_split}_best_quality_prompts.txt'
+            ),
+            'best_fairness_prompts': (
+                run_dir / f'{evaluation_split}_best_fairness_prompts.txt'
+            ),
         }
         return _present_output(output, config, 'Loaded existing')
     except Exception as exc:
-        return (f'Error: {type(exc).__name__}: {exc}',) + (None,) * 10
+        return (f'Error: {type(exc).__name__}: {exc}',) + (None,) * 11
 
 
 def prepare_from_yaml(config_text: str) -> str:
@@ -265,7 +340,7 @@ def run_from_yaml(config_text: str):
         output = run_experiment(config, PROJECT_ROOT, print)
         return _present_output(output, config, 'Finished')
     except Exception as exc:
-        return (f'Error: {type(exc).__name__}: {exc}',) + (None,) * 10
+        return (f'Error: {type(exc).__name__}: {exc}',) + (None,) * 11
 
 
 def build_app():
@@ -278,8 +353,8 @@ def build_app():
 
 This interface runs one complete **validation or test** experiment from the
 YAML below. The selected split is used for every condition, metric, ranking,
-plot, and best-prompt report. Loading the other source split for descriptive
-counts never sends it to an encoder or language model.
+plot, and quality/fairness prompt report. Loading the other source split for
+descriptive counts never sends it to an encoder or language model.
 """
         )
 
@@ -298,15 +373,17 @@ counts never sends it to an encoder or language model.
 5. Load each missing language model once, predict every condition, then
    atomically save its raw predictions and count tables under
    `<output_dir>/incomplete_run/`.
-6. For each completed or resumed model, calculate and rank every condition and
-   mark exactly one `is_best`.
-7. Write complete tables, matched factor contrasts, plots, and best prompts,
-   then delete `incomplete_run`.
+6. For each completed or resumed model, independently dense-rank the configured
+   quality and fairness metrics. Mark every exact defined rank-1 tie with
+   `is_quality_best` or `is_fairness_best`. Condition text only determines
+   reproducible display order; it never breaks either tie.
+7. Write complete tables, matched factor contrasts, parallel quality/fairness
+   plot suites, and both selected-prompt reports, then delete `incomplete_run`.
 
 The app performs inference and metric calculation in one action. The notebook
-separates them so metric code, ranking metric, and ranking direction can be
-recalculated from saved predictions without model inference, including after a
-kernel restart.
+separates them so metric code and the quality/fairness metric and direction
+settings can be recalculated from saved predictions without model inference,
+including after a kernel restart.
 There is no automatic validation-to-test transition. Switching to `test` is a
 deliberate configuration change and runs the same complete condition grid.
 Restarting reuses every available model CSV. Checkpoints are not compared with
@@ -347,8 +424,17 @@ the edited YAML, so discard the incomplete run before changing experiment settin
   accelerator memory; 1 disables batching.
 - Each `prompt_templates` entry names one prompt file relative to the project
   root. Prompt files support exactly `{target}`, `{audit_column}`, and `{labels}`.
-- `ranking_metric` must name a numeric results column or a documented alias;
-  choose `maximize` for quality/ratios and `minimize` for error/differences.
+- `quality_metric` may name any numeric result column or documented alias;
+  `quality_direction` is `maximize` or `minimize`.
+- `fairness_metric` must name a condition-level fairness summary: audit-group
+  accuracy difference; a mean/minimum/maximum demographic-parity ratio; or a
+  mean/minimum/maximum demographic-parity, equal-opportunity,
+  false-positive-rate, equalized-odds, or predictive-parity difference.
+  `fairness_direction` is `maximize` or `minimize`.
+- `quality_rank` and `fairness_rank` are independent exact dense ranks within
+  each language model. Every defined rank-1 tie receives the corresponding
+  `is_quality_best` or `is_fairness_best` flag. Undefined values receive no rank
+  and cannot win.
 
 For **P** prompt templates, **R** retrieval methods, **E** embedding models,
 **O** example orders, and **K+** positive example counts, conditions per
@@ -517,7 +603,7 @@ $$
 The results store those equality families once under
 `accuracy / micro_precision / micro_recall / micro_f1 / weighted_recall` and
 `macro_recall / balanced_accuracy`. Each individual standard name is still a
-valid `ranking_metric` alias.
+valid `quality_metric` alias.
 
 For multiclass agreement, let $C$ be the confusion matrix,
 $s=\sum_{r,k}C_{r,k}=N$, $q=\operatorname{trace}(C)$,
@@ -624,6 +710,18 @@ so the minimum ratio is the worst target-label value and the maximum is the best
 Coverage plots show $K$ or $G$ first so every defined count has an explicit
 denominator.
 
+Within each language model, `fairness_rank` is the exact dense rank on the
+configured `fairness_metric` and `fairness_direction`; every exact defined
+rank-1 tie has `is_fairness_best=True`. Independently, `quality_rank` uses
+`quality_metric` and `quality_direction`, and every exact defined rank-1 tie has
+`is_quality_best=True`. Undefined values receive no rank and cannot win.
+Deterministic condition ordering is only for presentation and never breaks a
+tie. Prompt reports and detailed plots are generated independently for quality
+and fairness winners. A model with no defined fairness winner is recorded in
+the fairness report and has no fairness-selected detailed rows; if every model
+lacks one, the fairness-selected detailed plot suite is omitted. Frozen test
+conditions remain unchanged.
+
 Quality and fairness must be interpreted together. With `target: profession`
 and audit column `gender`, these are conventional protected-group fairness
 diagnostics. With `target: gender` and audit column `profession`, the same
@@ -660,9 +758,9 @@ experiments with the same prompt candidates and separate winners.
             load_run_button = gr.Button('Load selected run')
 
         with gr.Tabs():
-            with gr.Tab('Best conditions'):
-                best_conditions = gr.Dataframe(
-                    label='One current-split winner per language model',
+            with gr.Tab('Quality and fairness winners'):
+                selected_conditions = gr.Dataframe(
+                    label='Current-split quality and fairness rank-1 conditions',
                     interactive=False,
                 )
             with gr.Tab('All rankings'):
@@ -681,9 +779,14 @@ experiments with the same prompt candidates and separate winners.
                     label='Target-label rates and supports by audit group', interactive=False
                 )
                 confusion_matrix = gr.Dataframe(label='Confusion counts', interactive=False)
-            with gr.Tab('Best-condition predictions'):
-                predictions = gr.Dataframe(
-                    label='Current-split labels and scores for winning conditions',
+            with gr.Tab('Best-quality-condition predictions'):
+                quality_predictions = gr.Dataframe(
+                    label='Current-split labels and scores for quality winners',
+                    interactive=False,
+                )
+            with gr.Tab('Best-fairness-condition predictions'):
+                fairness_predictions = gr.Dataframe(
+                    label='Current-split labels and scores for fairness winners',
                     interactive=False,
                 )
             with gr.Tab('Source composition'):
@@ -698,7 +801,7 @@ experiments with the same prompt candidates and separate winners.
                 )
             with gr.Tab('Plots'):
                 plot_gallery = gr.Gallery(
-                    label='Rankings and best-condition diagnostics',
+                    label='Parallel quality and fairness selection diagnostics',
                     type='filepath',
                     columns=2,
                     height=720,
@@ -719,13 +822,14 @@ experiments with the same prompt candidates and separate winners.
             inputs=config_text,
             outputs=[
                 status,
-                best_conditions,
+                selected_conditions,
                 all_rankings,
                 target_label_metrics,
                 fairness_metrics,
                 audit_group_metrics,
                 confusion_matrix,
-                predictions,
+                quality_predictions,
+                fairness_predictions,
                 source_counts,
                 run_counts,
                 plot_gallery,
@@ -752,13 +856,14 @@ experiments with the same prompt candidates and separate winners.
             inputs=[config_text, completed_runs],
             outputs=[
                 status,
-                best_conditions,
+                selected_conditions,
                 all_rankings,
                 target_label_metrics,
                 fairness_metrics,
                 audit_group_metrics,
                 confusion_matrix,
-                predictions,
+                quality_predictions,
+                fairness_predictions,
                 source_counts,
                 run_counts,
                 plot_gallery,

@@ -151,20 +151,21 @@ def _context_title(table: pd.DataFrame) -> str:
     return (f'target={table['target'].iloc[0]}, audit groups={table['audit_column'].iloc[0]}')
 
 
+def _condition_label(row: object) -> str:
+    return (
+        f'{row.language_model} | {row.retrieval_method} | '
+        f'{row.embedding_model} | examples={row.example_count} | '
+        f'{row.prompt_name} | {row.example_order}'
+    )
+
+
 def _condition_labels(results: pd.DataFrame) -> list[str]:
-    return [
-        (
-            f'{row.language_model} | {row.retrieval_method} | '
-            f'{row.embedding_model} | examples={row.example_count} | '
-            f'{row.prompt_name} | {row.example_order}'
-        )
-        for row in results.itertuples(index=False)
-    ]
+    return [_condition_label(row) for row in results.itertuples(index=False)]
 
 
 def _target_label_labels(metric_table: pd.DataFrame) -> list[str]:
     return [
-        f'{row.language_model} | target label={row.target_label}'
+        f'{_condition_label(row)} | target label={row.target_label}'
         for row in metric_table.itertuples(index=False)
     ]
 
@@ -173,14 +174,15 @@ def _target_label_audit_group_labels(
         audit_group_metrics: pd.DataFrame,
 ) -> list[str]:
     return [
-        f'{row.language_model} | target label={row.target_label} | audit group={row.audit_group}'
+        f'{_condition_label(row)} | target label={row.target_label} | '
+        f'audit group={row.audit_group}'
         for row in audit_group_metrics.itertuples(index=False)
     ]
 
 
 def _audit_group_labels(audit_group_metrics: pd.DataFrame) -> list[str]:
     return [
-        f'{row.language_model} | audit group={row.audit_group}'
+        f'{_condition_label(row)} | audit group={row.audit_group}'
         for row in audit_group_metrics.itertuples(index=False)
     ]
 
@@ -204,7 +206,8 @@ def _plot_metric_panels(
         title: str,
         output: Path,
         bounds: tuple[float, float] | None = None,
-        is_best: pd.Series | None = None,
+        is_selected: pd.Series | None = None,
+        selection_name: str | None = None,
 ) -> None:
     row_count = len(metric_table)
     figure_width = max(8.0, 3.25 * len(metrics))
@@ -218,10 +221,14 @@ def _plot_metric_panels(
     )
     axes = axes[0]
     y = np.arange(row_count)
-    if is_best is None:
+    if is_selected is None:
         colors = np.full(row_count, '#4C78A8', dtype=object)
     else:
-        colors = np.where(is_best.to_numpy(dtype=bool), '#1565C0', '#90CAF9')
+        colors = np.where(
+            is_selected.to_numpy(dtype=bool),
+            '#1565C0',
+            '#90CAF9',
+        )
 
     for metric_number, ((column, label), axis) in enumerate(zip(metrics, axes, strict=True)):
         values = pd.to_numeric(metric_table[column], errors='coerce').to_numpy(dtype=float)
@@ -248,9 +255,14 @@ def _plot_metric_panels(
             axis.tick_params(axis='y', labelleft=False)
 
     legend_items = [Patch(facecolor='#4C78A8', label='Result')]
-    if is_best is not None:
+    if is_selected is not None:
+        if selection_name is None:
+            raise ValueError('selection_name is required when is_selected is provided')
         legend_items = [
-            Patch(facecolor='#1565C0', label='Best condition'),
+            Patch(
+                facecolor='#1565C0',
+                label=f'{selection_name.title()}-best condition',
+            ),
             Patch(facecolor='#90CAF9', label='Other condition'),
         ]
     legend_items.append(
@@ -279,10 +291,16 @@ def _create_summary_plots(
         results: pd.DataFrame,
         split: str,
         output_dir: Path,
+        selection_name: str,
 ) -> dict[str, Path]:
-    ranked_results = results.sort_values(['language_model', 'rank'], kind='stable').reset_index(drop=True)
+    rank_column = f'{selection_name}_rank'
+    winner_column = f'is_{selection_name}_best'
+    ranked_results = results.sort_values(
+        ['language_model', rank_column, 'condition'],
+        kind='stable',
+    ).reset_index(drop=True)
     condition_labels = _condition_labels(ranked_results)
-    is_best = ranked_results['is_best']
+    is_selected = ranked_results[winner_column]
     context = _context_title(ranked_results)
     plot_specs = (
         ('quality_rates', QUALITY_METRICS, (0.0, 1.0), 'Quality rates'),
@@ -321,29 +339,34 @@ def _create_summary_plots(
     )
     plots: dict[str, Path] = {}
     for suffix, metrics, bounds, plot_title in plot_specs:
-        name = f'{split}_{suffix}'
+        name = f'{split}_{selection_name}_ranked_{suffix}'
         path = output_dir / f'{name}.png'
         _plot_metric_panels(
             ranked_results,
             metrics,
             condition_labels,
-            f'{split.title()} — {plot_title}\n{context}',
+            f'{split.title()} — {selection_name.title()}-ranked {plot_title}\n'
+            f'{context}',
             path,
             bounds=bounds,
-            is_best=is_best,
+            is_selected=is_selected,
+            selection_name=selection_name,
         )
         plots[name] = path
     return plots
 
 
-def _plot_confusion_matrices(
+def _plot_selected_confusion_matrices(
         confusion_matrix: pd.DataFrame,
         split: str,
+        selection_name: str,
         output: Path,
 ) -> None:
-    language_models = confusion_matrix['language_model'].drop_duplicates().tolist()
-    columns = min(2, len(language_models))
-    rows = ceil(len(language_models) / columns)
+    selected_conditions = confusion_matrix[
+        ['language_model', 'condition']
+    ].drop_duplicates()
+    columns = min(2, len(selected_conditions))
+    rows = ceil(len(selected_conditions) / columns)
     figure, axes = plt.subplots(
         rows,
         columns,
@@ -352,20 +375,25 @@ def _plot_confusion_matrices(
     )
     axes_flat = axes.ravel()
 
-    for axis, language_model in zip(axes_flat, language_models, strict=False):
-        language_model_confusion_matrix = confusion_matrix.loc[
-            confusion_matrix['language_model'].eq(language_model)
+    for axis, selected in zip(
+            axes_flat,
+            selected_conditions.itertuples(index=False),
+            strict=False,
+    ):
+        condition_confusion_matrix = confusion_matrix.loc[
+            confusion_matrix['language_model'].eq(selected.language_model)
+            & confusion_matrix['condition'].eq(selected.condition)
         ]
         true_labels = (
-            language_model_confusion_matrix['true_label'].drop_duplicates().tolist()
+            condition_confusion_matrix['true_label'].drop_duplicates().tolist()
         )
         predicted_labels = (
-            language_model_confusion_matrix['predicted_label']
+            condition_confusion_matrix['predicted_label']
             .drop_duplicates()
             .tolist()
         )
         label_order = list(dict.fromkeys(true_labels + predicted_labels))
-        confusion_counts = language_model_confusion_matrix.pivot_table(
+        confusion_counts = condition_confusion_matrix.pivot_table(
             index='true_label',
             columns='predicted_label',
             values='count',
@@ -373,7 +401,9 @@ def _plot_confusion_matrices(
             fill_value=0,
         ).reindex(index=label_order, columns=label_order, fill_value=0)
         image = axis.imshow(confusion_counts.to_numpy(), cmap='Blues', vmin=0)
-        axis.set_title(language_model)
+        axis.set_title(fill(_condition_label(
+            condition_confusion_matrix.iloc[0]
+        ), width=70))
         tick_font_size = 8 if len(label_order) <= 12 else 5
         axis.set_xticks(
             np.arange(len(label_order)),
@@ -406,16 +436,163 @@ def _plot_confusion_matrices(
                     )
         figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04, label='Count')
 
-    for axis in axes_flat[len(language_models):]:
+    for axis in axes_flat[len(selected_conditions):]:
         axis.remove()
     figure.suptitle(
-        f'{split.title()} best-condition confusion matrices\n'
+        f'{split.title()} {selection_name}-best-condition confusion matrices\n'
         f'{_context_title(confusion_matrix)}',
         fontsize=14,
     )
     figure.tight_layout(rect=(0, 0, 1, 0.96))
     figure.savefig(output, dpi=160, bbox_inches='tight')
     plt.close(figure)
+
+
+def _create_selected_condition_plots(
+        result_tables: dict[str, pd.DataFrame],
+        output_dir: Path,
+        evaluation_split: str,
+        selection_name: str,
+) -> dict[str, Path]:
+    results = result_tables['results']
+    selected_conditions = set(
+        results.loc[results[f'is_{selection_name}_best'], 'condition']
+    )
+    if not selected_conditions:
+        return {}
+
+    target_label_metrics = result_tables['target_label_metrics']
+    audit_group_metrics = result_tables['audit_group_metrics']
+    fairness_metrics = result_tables['fairness_metrics']
+    confusion_matrix = result_tables['confusion_matrix']
+    selected_target_label_metrics = target_label_metrics.loc[
+        target_label_metrics['condition'].isin(selected_conditions)
+    ].sort_values(
+        ['language_model', 'condition', 'target_label'],
+        kind='stable',
+    ).reset_index(drop=True)
+    selected_audit_group_metrics = audit_group_metrics.loc[
+        audit_group_metrics['condition'].isin(selected_conditions)
+    ].sort_values(
+        ['language_model', 'condition', 'target_label', 'audit_group'],
+        kind='stable',
+    ).reset_index(drop=True)
+    selected_fairness_metrics = fairness_metrics.loc[
+        fairness_metrics['condition'].isin(selected_conditions)
+    ].sort_values(
+        ['language_model', 'condition', 'target_label'],
+        kind='stable',
+    ).reset_index(drop=True)
+    selected_confusion_matrix = confusion_matrix.loc[
+        confusion_matrix['condition'].isin(selected_conditions)
+    ].sort_values(
+        ['language_model', 'condition', 'true_label', 'predicted_label'],
+        kind='stable',
+    ).reset_index(drop=True)
+    selected_overall_audit_group_metrics = (
+        selected_audit_group_metrics.drop_duplicates(
+            ['language_model', 'condition', 'audit_group']
+        )
+        .sort_values(
+            ['language_model', 'condition', 'audit_group'],
+            kind='stable',
+        )
+        .reset_index(drop=True)
+    )
+
+    name_prefix = f'{evaluation_split}_best_{selection_name}'
+    title_prefix = (
+        f'{evaluation_split.title()} {selection_name}-best-condition'
+    )
+    detail_specs = (
+        (
+            f'{name_prefix}_target_label_rates',
+            selected_target_label_metrics,
+            TARGET_LABEL_RATE_COLUMNS,
+            _target_label_labels(selected_target_label_metrics),
+            f'{title_prefix} per-target-label rates',
+            (0.0, 1.0),
+        ),
+        (
+            f'{name_prefix}_target_label_counts',
+            selected_target_label_metrics,
+            TARGET_LABEL_COUNT_COLUMNS,
+            _target_label_labels(selected_target_label_metrics),
+            f'{title_prefix} per-target-label counts',
+            None,
+        ),
+        (
+            f'{name_prefix}_audit_group_accuracy',
+            selected_overall_audit_group_metrics,
+            (('audit_group_accuracy', 'Audit-group accuracy'),),
+            _audit_group_labels(selected_overall_audit_group_metrics),
+            f'{title_prefix} audit-group accuracy',
+            (0.0, 1.0),
+        ),
+        (
+            f'{name_prefix}_audit_group_size',
+            selected_overall_audit_group_metrics,
+            (('audit_group_n', 'Audit-group size'),),
+            _audit_group_labels(selected_overall_audit_group_metrics),
+            f'{title_prefix} audit-group sizes',
+            None,
+        ),
+        (
+            f'{name_prefix}_target_label_rates_by_audit_group',
+            selected_audit_group_metrics,
+            AUDIT_GROUP_RATE_COLUMNS,
+            _target_label_audit_group_labels(selected_audit_group_metrics),
+            f'{title_prefix} target-label rates by audit group',
+            (0.0, 1.0),
+        ),
+        (
+            f'{name_prefix}_target_label_counts_by_audit_group',
+            selected_audit_group_metrics,
+            AUDIT_GROUP_COUNT_COLUMNS,
+            _target_label_audit_group_labels(selected_audit_group_metrics),
+            f'{title_prefix} target-label counts by audit group',
+            None,
+        ),
+        (
+            f'{name_prefix}_target_label_fairness',
+            selected_fairness_metrics,
+            FAIRNESS_TARGET_LABEL_COLUMNS,
+            _target_label_labels(selected_fairness_metrics),
+            f'{title_prefix} target-label fairness metrics',
+            (0.0, 1.0),
+        ),
+        (
+            f'{name_prefix}_fairness_coverage',
+            selected_fairness_metrics,
+            FAIRNESS_COVERAGE_COLUMNS,
+            _target_label_labels(selected_fairness_metrics),
+            f'{title_prefix} fairness coverage: total and defined groups',
+            None,
+        ),
+    )
+    plots: dict[str, Path] = {}
+    for name, metric_table, metrics, row_labels, title, bounds in detail_specs:
+        path = output_dir / f'{name}.png'
+        _plot_metric_panels(
+            metric_table,
+            metrics,
+            row_labels,
+            f'{title}\n{_context_title(metric_table)}',
+            path,
+            bounds=bounds,
+        )
+        plots[name] = path
+
+    confusion_name = f'{name_prefix}_confusion_matrices'
+    confusion_path = output_dir / f'{confusion_name}.png'
+    _plot_selected_confusion_matrices(
+        selected_confusion_matrix,
+        evaluation_split,
+        selection_name,
+        confusion_path,
+    )
+    plots[confusion_name] = confusion_path
+    return plots
 
 
 def create_metric_plots(
@@ -432,28 +609,11 @@ def create_metric_plots(
     fairness_metrics = result_tables['fairness_metrics']
     confusion_matrix = result_tables['confusion_matrix']
 
-    selected_conditions = set(results.loc[results['is_best'], 'condition'])
-    best_target_label_metrics = target_label_metrics.loc[
-        target_label_metrics['condition'].isin(selected_conditions)
-    ].sort_values(['language_model', 'target_label'], kind='stable').reset_index(drop=True)
-    best_audit_group_metrics = audit_group_metrics.loc[
-        audit_group_metrics['condition'].isin(selected_conditions)
-    ].sort_values(['language_model', 'target_label', 'audit_group'], kind='stable').reset_index(drop=True)
-    best_fairness_metrics = fairness_metrics.loc[
-        fairness_metrics['condition'].isin(selected_conditions)
-    ].sort_values(['language_model', 'target_label'], kind='stable').reset_index(drop=True)
-    best_confusion_matrix = confusion_matrix.loc[
-        confusion_matrix['condition'].isin(selected_conditions)
-    ].sort_values(['language_model', 'true_label', 'predicted_label'], kind='stable').reset_index(drop=True)
-    best_overall_audit_group_metrics = best_audit_group_metrics.drop_duplicates(
-        ['language_model', 'condition', 'audit_group']
-    ).sort_values(['language_model', 'audit_group'], kind='stable').reset_index(drop=True)
-
     _validate_numeric_coverage(
         'results',
         results,
         _column_names(SUMMARY_METRICS),
-        {'example_count', 'rank'},
+        {'example_count', 'quality_rank', 'fairness_rank'},
     )
     _validate_numeric_coverage(
         'target_label_metrics',
@@ -482,93 +642,17 @@ def create_metric_plots(
     )
 
     plots: dict[str, Path] = {}
-    plots.update(_create_summary_plots(results, evaluation_split, output_dir))
-
-    detail_specs = (
-        (
-            f'{evaluation_split}_best_target_label_rates',
-            best_target_label_metrics,
-            TARGET_LABEL_RATE_COLUMNS,
-            _target_label_labels(best_target_label_metrics),
-            f'{evaluation_split.title()} best-condition per-target-label rates',
-            (0.0, 1.0),
-        ),
-        (
-            f'{evaluation_split}_best_target_label_counts',
-            best_target_label_metrics,
-            TARGET_LABEL_COUNT_COLUMNS,
-            _target_label_labels(best_target_label_metrics),
-            f'{evaluation_split.title()} best-condition per-target-label counts',
-            None,
-        ),
-        (
-            f'{evaluation_split}_best_audit_group_accuracy',
-            best_overall_audit_group_metrics,
-            (('audit_group_accuracy', 'Audit-group accuracy'),),
-            _audit_group_labels(best_overall_audit_group_metrics),
-            f'{evaluation_split.title()} best-condition audit-group accuracy',
-            (0.0, 1.0),
-        ),
-        (
-            f'{evaluation_split}_best_audit_group_size',
-            best_overall_audit_group_metrics,
-            (('audit_group_n', 'Audit-group size'),),
-            _audit_group_labels(best_overall_audit_group_metrics),
-            f'{evaluation_split.title()} best-condition audit-group sizes',
-            None,
-        ),
-        (
-            f'{evaluation_split}_best_target_label_rates_by_audit_group',
-            best_audit_group_metrics,
-            AUDIT_GROUP_RATE_COLUMNS,
-            _target_label_audit_group_labels(best_audit_group_metrics),
-            f'{evaluation_split.title()} best-condition target-label rates by audit group',
-            (0.0, 1.0),
-        ),
-        (
-            f'{evaluation_split}_best_target_label_counts_by_audit_group',
-            best_audit_group_metrics,
-            AUDIT_GROUP_COUNT_COLUMNS,
-            _target_label_audit_group_labels(best_audit_group_metrics),
-            f'{evaluation_split.title()} best-condition target-label counts by audit group',
-            None,
-        ),
-        (
-            f'{evaluation_split}_best_target_label_fairness',
-            best_fairness_metrics,
-            FAIRNESS_TARGET_LABEL_COLUMNS,
-            _target_label_labels(best_fairness_metrics),
-            f'{evaluation_split.title()} best-condition target-label fairness metrics',
-            (0.0, 1.0),
-        ),
-        (
-            f'{evaluation_split}_best_fairness_coverage',
-            best_fairness_metrics,
-            FAIRNESS_COVERAGE_COLUMNS,
-            _target_label_labels(best_fairness_metrics),
-            f'{evaluation_split.title()} best-condition fairness coverage: total and defined groups',
-            None,
-        ),
-    )
-    for name, metric_table, metrics, row_labels, title, bounds in detail_specs:
-        path = output_dir / f'{name}.png'
-        _plot_metric_panels(
-            metric_table,
-            metrics,
-            row_labels,
-            f'{title}\n{_context_title(metric_table)}',
-            path,
-            bounds=bounds,
-        )
-        plots[name] = path
-
-    confusion_name = f'{evaluation_split}_best_confusion_matrices'
-    confusion_path = output_dir / f'{confusion_name}.png'
-    _plot_confusion_matrices(
-        best_confusion_matrix,
-        evaluation_split,
-        confusion_path,
-    )
-
-    plots[confusion_name] = confusion_path
+    for selection_name in ('quality', 'fairness'):
+        plots.update(_create_summary_plots(
+            results,
+            evaluation_split,
+            output_dir,
+            selection_name,
+        ))
+        plots.update(_create_selected_condition_plots(
+            result_tables,
+            output_dir,
+            evaluation_split,
+            selection_name,
+        ))
     return plots

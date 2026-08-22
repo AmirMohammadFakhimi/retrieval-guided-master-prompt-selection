@@ -1,13 +1,15 @@
 # Frozen from results/validation-run-20260822-150124-751229.
-# Selected by validation macro_f1 (maximize): 0.975000.
+# Selected by validation quality metric macro_f1 (maximize): 0.975000.
 
 defaults:
   target: profession
   evaluation_split: test
   seed: 42
   output_dir: results/test/gemma-4-31b-it
-  ranking_metric: macro_f1
-  ranking_direction: maximize
+  quality_metric: macro_f1
+  quality_direction: maximize
+  fairness_metric: mean_equalized_odds_difference
+  fairness_direction: minimize
 
 dataset:
   file: data/bias_in_bios.jsonl

@@ -416,17 +416,33 @@ def _write_run_outputs(
         run_dir / 'plots',
         evaluation_split,
     )
-    selected = result_tables['results'].loc[
-        result_tables['results']['is_best']
-    ].copy()
-    best_prompts_path = run_dir / f'{evaluation_split}_best_prompts.txt'
-    evaluation.write_best_prompts(
-        best_prompts_path,
-        selected,
+    language_model_ids = [
+        entry['id'] for entry in config['inference']['language_models']
+    ]
+    best_quality_prompts_path = run_dir / f'{evaluation_split}_best_quality_prompts.txt'
+    evaluation.write_selected_prompts(
+        best_quality_prompts_path,
+        result_tables['results'],
+        language_model_ids,
         config['prompt_templates'],
         target_labels,
-        defaults['ranking_metric'],
-        defaults['ranking_direction'],
+        'quality',
+        defaults['quality_metric'],
+        defaults['quality_direction'],
+        evaluation_split,
+    )
+    best_fairness_prompts_path = (
+        run_dir / f'{evaluation_split}_best_fairness_prompts.txt'
+    )
+    evaluation.write_selected_prompts(
+        best_fairness_prompts_path,
+        result_tables['results'],
+        language_model_ids,
+        config['prompt_templates'],
+        target_labels,
+        'fairness',
+        defaults['fairness_metric'],
+        defaults['fairness_direction'],
         evaluation_split,
     )
 
@@ -435,7 +451,8 @@ def _write_run_outputs(
         'run_dir': run_dir,
         **result_tables,
         'plots': plots,
-        'best_prompts': best_prompts_path,
+        'best_quality_prompts': best_quality_prompts_path,
+        'best_fairness_prompts': best_fairness_prompts_path,
     }
 
 
@@ -754,8 +771,10 @@ def calculate_metrics(
         ranked_result_tables.append(
             evaluation.rank_results(
                 pd.concat(condition_result_tables, ignore_index=True),
-                defaults['ranking_metric'],
-                defaults['ranking_direction'],
+                defaults['quality_metric'],
+                defaults['quality_direction'],
+                defaults['fairness_metric'],
+                defaults['fairness_direction'],
             )
         )
 

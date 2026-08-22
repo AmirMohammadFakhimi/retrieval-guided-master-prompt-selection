@@ -105,8 +105,43 @@ def _require_enum(value: Any, setting: str, allowed: set[str] | frozenset[str]) 
     return value
 
 
+def _require_result_metric(
+        defaults: dict[str, Any],
+        setting: str,
+        allowed_columns: frozenset[str],
+) -> str:
+    """Return a configured result metric whose resolved column is allowed."""
+
+    metric = _require_non_empty_string(defaults.get(setting), f'defaults.{setting}')
+    resolved_metric = evaluation.resolve_metric_column(metric)
+    if resolved_metric not in allowed_columns:
+        aliases = ', '.join(sorted(evaluation.METRIC_COLUMN_ALIASES))
+        columns = ', '.join(sorted(allowed_columns))
+        raise ValueError(
+            f'defaults.{setting} must resolve to an allowed numeric result column. '
+            f'Aliases: {aliases}. Allowed columns: {columns}'
+        )
+    return metric
+
+
 def _validate_defaults(defaults: dict[str, Any]) -> None:
-    """Validate run-wide target, split, output, and ranking settings."""
+    """Validate run-wide target, split, output, and selection settings."""
+
+    allowed_settings = {
+        'target',
+        'evaluation_split',
+        'seed',
+        'output_dir',
+        'quality_metric',
+        'quality_direction',
+        'fairness_metric',
+        'fairness_direction',
+    }
+    unsupported_settings = sorted(set(defaults) - allowed_settings)
+    if unsupported_settings:
+        raise ValueError(
+            f'Unsupported defaults settings: {unsupported_settings}'
+        )
 
     _require_enum(defaults.get('target'), 'defaults.target', {'profession', 'gender'})
     _require_enum(
@@ -115,24 +150,27 @@ def _validate_defaults(defaults: dict[str, Any]) -> None:
         {'validation', 'test'},
     )
     _require_enum(
-        defaults.get('ranking_direction'),
-        'defaults.ranking_direction',
+        defaults.get('quality_direction'),
+        'defaults.quality_direction',
+        {'maximize', 'minimize'},
+    )
+    _require_enum(
+        defaults.get('fairness_direction'),
+        'defaults.fairness_direction',
         {'maximize', 'minimize'},
     )
     _require_integer(defaults.get('seed'), 'defaults.seed', 0)
     _require_non_empty_string(defaults.get('output_dir'), 'defaults.output_dir')
-    ranking_metric = _require_non_empty_string(
-        defaults.get('ranking_metric'),
-        'defaults.ranking_metric',
+    _require_result_metric(
+        defaults,
+        'quality_metric',
+        evaluation.RESULT_NUMERIC_COLUMNS,
     )
-    resolved_metric = evaluation.resolve_metric_column(ranking_metric)
-    if resolved_metric not in evaluation.RESULT_NUMERIC_COLUMNS:
-        aliases = ', '.join(sorted(evaluation.METRIC_COLUMN_ALIASES))
-        columns = ', '.join(sorted(evaluation.RESULT_NUMERIC_COLUMNS))
-        raise ValueError(
-            f'defaults.ranking_metric must be a numeric result column or alias. '
-            f'Aliases: {aliases}. Result columns: {columns}'
-        )
+    _require_result_metric(
+        defaults,
+        'fairness_metric',
+        evaluation.FAIRNESS_METRIC_COLUMNS,
+    )
 
 
 def _validate_dataset(config: dict[str, Any]) -> int | None:

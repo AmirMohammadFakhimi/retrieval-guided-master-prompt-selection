@@ -20,11 +20,20 @@ defaults:
   # In the notebook, this may be changed after run_inference; rerun only the
   # calculate_metrics section to regenerate rankings and artifacts. Saved raw
   # predictions can also be reloaded after a kernel restart.
-  ranking_metric: macro_f1
+  quality_metric: macro_f1
 
   # Exact values: maximize | minimize. Use maximize for quality/ratio metrics
   # and minimize for error/difference metrics. This is also analysis-only.
-  ranking_direction: maximize
+  quality_direction: maximize
+
+  # One of the documented condition-level fairness summary columns. Recommended:
+  # mean_equalized_odds_difference, which aggregates per-target-label
+  # equalized-odds disparities while retaining exact coverage information.
+  fairness_metric: mean_equalized_odds_difference
+
+  # Exact values: maximize | minimize. Use minimize for fairness differences and
+  # maximize for demographic-parity ratios. This is also analysis-only.
+  fairness_direction: minimize
 
 dataset:
   # Non-empty path string for the normalized train/dev/test JSONL cache.

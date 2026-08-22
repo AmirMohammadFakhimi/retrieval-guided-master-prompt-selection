@@ -180,17 +180,18 @@ kernel restart, run the notebook setup and configuration cells, set
 jump to the metric section. `load_inference_run(...)` reads that CSV and the two
 count CSVs beside it.
 
-After editing metric code or changing only `ranking_metric` or
-`ranking_direction`, rerun just the metric section. Each successful metric
-recalculation creates a new timestamped artifact directory.
+After editing metric code or changing only `quality_metric`,
+`quality_direction`, `fairness_metric`, or `fairness_direction`, rerun just the
+metric section. Each successful metric recalculation creates a new timestamped
+artifact directory.
 
 During inference, each completed language model's raw predictions are saved
 atomically under `<output_dir>/incomplete_run/`. On restart, an existing model
 CSV is reused and a missing one is computed. This deliberately does not compare
 the current YAML with the cached run, so discard the incomplete run before
 changing experiment settings. Likewise, only load a prediction CSV created by
-the same inference configuration; metric code, ranking metric, and ranking
-direction may differ. Use **Discard incomplete run** in the app or
+the same inference configuration; metric code and the configured quality and
+fairness selection settings may differ. Use **Discard incomplete run** in the app or
 `discard_incomplete_run(config, PROJECT_ROOT)` in the notebook. After every
 final artifact is written successfully,
 `incomplete_run/` is deleted automatically; the completed run retains
@@ -202,15 +203,16 @@ select a directory under **Completed runs** and choose **Load selected run**.
 After finishing a run in the notebook, choose **Refresh completed runs** first;
 the newest run is selected automatically, and older completed runs remain in
 the dropdown. Loading reads that run's saved configuration, CSVs, plots, and
-best-prompt report only—it does not load models or recompute results.
+quality/fairness prompt reports only—it does not load models or recompute
+results.
 
 You can also run
 [`Fairness_Aware_ICL_Complete_Pipeline.ipynb`](Fairness_Aware_ICL_Complete_Pipeline.ipynb).
 It starts with the split contract and compact preflight information, previews
 the exact language-model messages, separates inference from metric calculation,
-then displays only the artifact directory, one winner per language model, and
-one editable factor-contrast summary slice. Complete CSVs and plots are saved
-without being rendered in the notebook.
+then displays only the artifact directory, every tied winner for each language
+model, and one editable factor-contrast summary slice. Complete CSVs and plots
+are saved without being rendered in the notebook.
 
 To benchmark the step-7 embedding batch size separately, run:
 
@@ -246,14 +248,20 @@ to embedding, prediction, metric calculation, ranking, or plotting.
 
 Important outputs in each timestamped result folder:
 
-- `<split>_results.csv`: every ranked condition and one `is_best` row per language model;
+- `<split>_results.csv`: every condition with independent `quality_rank` and
+  `fairness_rank` values plus every exact tied `is_quality_best` and
+  `is_fairness_best` winner;
 - `<split>_factor_contrast_details.csv`: every matched one-factor metric delta
   and zero-shot-to-few-shot composite delta;
 - `<split>_factor_contrast_summary.csv`: overall and per-language-model
   descriptive aggregates of those deltas;
 - `<split>_predictions.csv`: prompts, retrieved-example metadata, seeds,
   prediction method, generated model output or label scores, and labels;
-- `<split>_best_prompts.txt`: the selected prompt for each language model;
+- `<split>_best_quality_prompts.txt`: every tied quality-selected prompt for
+  each language model;
+- `<split>_best_fairness_prompts.txt`: every tied fairness-selected prompt for
+  each language model, plus an explicit note for any model without a defined
+  fairness winner;
 - `<split>_source_dataset_counts.csv`: all filtered train, validation, and test
   source composition;
 - `<split>_run_dataset_counts.csv`: capped train plus the selected evaluation
@@ -263,10 +271,25 @@ Important outputs in each timestamped result folder:
 - `<split>_target_label_metrics.csv`, `<split>_audit_group_metrics.csv`,
   `<split>_fairness_metrics.csv`, and `<split>_confusion_matrix.csv`.
 
-Summary plots compare every configured condition in within-language-model rank
-order and highlight `is_best`. Detailed target-label, audit-group, fairness,
-coverage, and confusion diagnostics focus on the current split's winner for
-each model; the CSV metric tables retain every condition.
+The eight `<split>_quality_ranked_<family>.png` summary plots and eight
+`<split>_fairness_ranked_<family>.png` summary plots compare every configured
+condition in their corresponding within-language-model rank order and highlight
+the matching winner flag. Nine `<split>_best_quality_*` and nine
+`<split>_best_fairness_*` detailed target-label, audit-group, fairness, coverage,
+and confusion diagnostics include every tied winner for their respective
+criterion. Each confusion matrix is a separate condition panel rather than an
+aggregate. The CSV metric tables retain every condition. When every fairness
+value is undefined, the fairness-ranked summaries and prompt report remain,
+while the nine fairness-selected detailed plots are omitted.
+
+Quality and fairness ranks are independent exact dense ranks within each
+language model and follow their configured directions. Equal values receive
+ranks such as `1, 1, 2`; every defined rank-1 row receives its corresponding
+winner flag. Undefined values are sorted last, receive no rank, and cannot win.
+Lexicographic condition ordering makes tables deterministic but is never a
+quality or fairness tie-breaker. An entirely undefined quality metric is an
+error; an entirely undefined fairness metric produces no fairness winner for
+that model.
 
 ## Factor contrasts
 
@@ -417,7 +440,7 @@ $$
 The results store those equality families once under
 `accuracy / micro_precision / micro_recall / micro_f1 / weighted_recall` and
 `macro_recall / balanced_accuracy`. Each individual standard name is still a
-valid `ranking_metric` alias.
+valid `quality_metric` alias.
 
 For multiclass agreement, let $C$ be the confusion matrix,
 $s=\sum_{r,k}C_{r,k}=N$, $q=\operatorname{trace}(C)$,
@@ -523,6 +546,18 @@ value and their maximum is the worst. For demographic-parity ratio, one is best,
 so the minimum ratio is the worst target-label value and the maximum is the best.
 Coverage plots show $K$ or $G$ first so every defined count has an explicit
 denominator.
+
+`fairness_metric` accepts only the condition-level fairness summaries above:
+audit-group accuracy difference; the mean, minimum, and maximum
+demographic-parity ratios; and the mean, minimum, and maximum difference
+summaries for demographic parity, equal opportunity, false-positive rate,
+equalized odds, and predictive parity. `fairness_direction` controls which end
+receives rank 1. Within each language model, every exact defined rank-1 tie has
+`is_fairness_best=True`; independently, `quality_metric` and
+`quality_direction` determine `quality_rank` and `is_quality_best`.
+Quality and fairness prompt reports, ranked summaries, and detailed plots use
+their corresponding winners independently. Frozen test conditions remain
+unchanged.
 
 Quality and fairness must be interpreted together. With `target: profession`
 and audit column `gender`, these are conventional protected-group fairness

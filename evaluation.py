@@ -38,6 +38,28 @@ METRIC_COLUMN_ALIASES = {
     'balanced_accuracy': MACRO_RECALL_METRIC_COLUMN,
 }
 
+FAIRNESS_METRIC_COLUMNS = frozenset({
+    'audit_group_accuracy_difference',
+    'mean_demographic_parity_difference',
+    'min_demographic_parity_difference',
+    'max_demographic_parity_difference',
+    'mean_equal_opportunity_difference',
+    'min_equal_opportunity_difference',
+    'max_equal_opportunity_difference',
+    'mean_false_positive_rate_difference',
+    'min_false_positive_rate_difference',
+    'max_false_positive_rate_difference',
+    'mean_equalized_odds_difference',
+    'min_equalized_odds_difference',
+    'max_equalized_odds_difference',
+    'mean_predictive_parity_difference',
+    'min_predictive_parity_difference',
+    'max_predictive_parity_difference',
+    'mean_demographic_parity_ratio',
+    'min_demographic_parity_ratio',
+    'max_demographic_parity_ratio',
+})
+
 RESULT_NUMERIC_COLUMNS = frozenset({
     'example_count',
     'sample_count',
@@ -903,77 +925,147 @@ def calculate_condition_metrics(
     return result, target_label_metrics, confusion_matrix, audit_group_metrics, fairness_metrics
 
 
-def rank_results(results: pd.DataFrame, metric: str, direction: str) -> pd.DataFrame:
-    """Rank prompt configurations separately within each language model."""
+def rank_results(
+        results: pd.DataFrame,
+        quality_metric: str,
+        quality_direction: str,
+        fairness_metric: str,
+        fairness_direction: str,
+) -> pd.DataFrame:
+    """Dense-rank configured quality and fairness metrics within each model."""
 
-    if direction not in {'maximize', 'minimize'}:
-        raise ValueError("direction must be 'maximize' or 'minimize'")
+    for name, direction in (
+            ('quality_direction', quality_direction),
+            ('fairness_direction', fairness_direction),
+    ):
+        if direction not in {'maximize', 'minimize'}:
+            raise ValueError(f"{name} must be 'maximize' or 'minimize'")
 
-    metric_column = resolve_metric_column(metric)
-    if metric_column not in results.columns:
-        available = ', '.join(results.select_dtypes(include='number').columns)
-        raise ValueError(f'Unknown ranking metric {metric!r}. Numeric result columns: {available}')
-    if not pd.api.types.is_numeric_dtype(results[metric_column]):
-        raise ValueError(f'Ranking metric {metric!r} must be numeric')
+    metric_settings = (
+        ('quality_metric', quality_metric),
+        ('fairness_metric', fairness_metric),
+    )
+    metric_columns: dict[str, str] = {}
+    for setting, metric in metric_settings:
+        metric_column = resolve_metric_column(metric)
+        if metric_column not in results.columns:
+            available = ', '.join(results.select_dtypes(include='number').columns)
+            raise ValueError(
+                f'Unknown {setting} {metric!r}. Numeric result columns: {available}'
+            )
+        if not pd.api.types.is_numeric_dtype(results[metric_column]):
+            raise ValueError(f'{setting} {metric!r} must be numeric')
+        metric_columns[setting] = metric_column
 
-    defined_by_language_model = results.groupby('language_model', sort=False)[metric_column].apply(
+    quality_metric_column = metric_columns['quality_metric']
+    fairness_metric_column = metric_columns['fairness_metric']
+    defined_by_language_model = results.groupby(
+        'language_model',
+        sort=False,
+    )[quality_metric_column].apply(
         lambda values: values.notna().any()
     )
 
     undefined_language_models = defined_by_language_model.index[~defined_by_language_model].tolist()
     if undefined_language_models:
         raise ValueError(
-            f'Ranking metric {metric!r} is undefined for every condition of language models: {undefined_language_models}'
+            f'Quality metric {quality_metric!r} is undefined for every condition '
+            f'of language models: {undefined_language_models}'
         )
 
-    ranked = results.sort_values(['language_model', metric_column, 'condition'],
-        ascending=[True, direction == 'minimize', True],
+    ranked = results.sort_values(['language_model', quality_metric_column, 'condition'],
+        ascending=[True, quality_direction == 'minimize', True],
         na_position='last',
         kind='stable',
     ).reset_index(drop=True)
     ranked.insert(
         0,
-        'rank',
-        ranked.groupby('language_model', sort=False).cumcount() + 1,
+        'quality_rank',
+        ranked.groupby('language_model', sort=False)[quality_metric_column]
+        .rank(
+            method='dense',
+            ascending=quality_direction == 'minimize',
+            na_option='keep',
+        )
+        .astype('Int64'),
     )
-    ranked.insert(1, 'is_best', ranked['rank'].eq(1))
+    ranked.insert(
+        1,
+        'is_quality_best',
+        ranked['quality_rank'].eq(1).fillna(False).astype(bool),
+    )
+    ranked.insert(
+        2,
+        'fairness_rank',
+        ranked.groupby('language_model', sort=False)[fairness_metric_column]
+        .rank(
+            method='dense',
+            ascending=fairness_direction == 'minimize',
+            na_option='keep',
+        )
+        .astype('Int64'),
+    )
+    ranked.insert(
+        3,
+        'is_fairness_best',
+        ranked['fairness_rank'].eq(1).fillna(False).astype(bool),
+    )
 
     return ranked
 
 
-def write_best_prompts(
+def write_selected_prompts(
         path: Path,
-        selected: pd.DataFrame,
+        results: pd.DataFrame,
+        language_model_ids: list[str],
         prompt_templates: dict[str, Any],
         target_labels: list[str],
-        ranking_metric: str,
-        ranking_direction: str,
+        selection_name: str,
+        selection_metric: str,
+        selection_direction: str,
         evaluation_split: str,
 ) -> None:
-    """Save the best current-split prompt for every language model."""
+    """Save every tied selected prompt and identify models without a winner."""
 
-    metric_column = resolve_metric_column(ranking_metric)
+    if selection_name not in {'quality', 'fairness'}:
+        raise ValueError("selection_name must be 'quality' or 'fairness'")
+
+    metric_column = resolve_metric_column(selection_metric)
+    winner_column = f'is_{selection_name}_best'
     sections: list[str] = []
 
-    for best in selected.to_dict('records'):
-        resolved_prompt = prompt_templates[best['prompt_name']].format(
-            target=display_column_name(best['target']),
-            audit_column=display_column_name(best['audit_column']),
-            labels=', '.join(target_labels),
-        )
+    for language_model_id in language_model_ids:
+        model_selected = results.loc[
+            results['language_model'].eq(language_model_id)
+            & results[winner_column].astype(bool)
+        ].sort_values('condition', kind='stable')
+        if model_selected.empty:
+            sections.append(
+                f'Language model: {language_model_id}\n'
+                f'No defined {selection_name} winner for '
+                f'{selection_metric} ({selection_direction}).'
+            )
+            continue
 
-        sections.append(
-            f'Language model: {best['language_model']}\n'
-            f'Selected on {evaluation_split} metric: {ranking_metric} '
-            f'({ranking_direction})\n'
-            f'{evaluation_split.title()} score: {best[metric_column]}\n'
-            f'Retrieval method: {best['retrieval_method']}\n'
-            f'Embedding model: {best['embedding_model']}\n'
-            f'Examples: {best['example_count']}\n'
-            f'Example order: {best['example_order']}\n'
-            f'Prompt name: {best['prompt_name']}\n'
-            f'Prediction method: {best['prediction_method']}\n\n'
-            f'{resolved_prompt}'
-        )
+        for selected in model_selected.to_dict('records'):
+            resolved_prompt = prompt_templates[selected['prompt_name']].format(
+                target=display_column_name(selected['target']),
+                audit_column=display_column_name(selected['audit_column']),
+                labels=', '.join(target_labels),
+            )
+
+            sections.append(
+                f'Language model: {selected['language_model']}\n'
+                f'Selected on {evaluation_split} {selection_name} metric: '
+                f'{selection_metric} ({selection_direction})\n'
+                f'{evaluation_split.title()} score: {selected[metric_column]}\n'
+                f'Retrieval method: {selected['retrieval_method']}\n'
+                f'Embedding model: {selected['embedding_model']}\n'
+                f'Examples: {selected['example_count']}\n'
+                f'Example order: {selected['example_order']}\n'
+                f'Prompt name: {selected['prompt_name']}\n'
+                f'Prediction method: {selected['prediction_method']}\n\n'
+                f'{resolved_prompt}'
+            )
 
     path.write_text('\n\n---\n\n'.join(sections) + '\n', encoding='utf-8')

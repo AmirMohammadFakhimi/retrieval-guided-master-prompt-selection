@@ -1,0 +1,49 @@
+Language model: Qwen/Qwen3.6-27B
+Selected on validation metric: macro_f1 (maximize)
+Validation score: 0.974937343358396
+Retrieval method: balanced_semantic
+Embedding model: BAAI/bge-large-en-v1.5
+Examples: 2
+Example order: reverse
+Prompt name: fairness_aware
+
+Predict the held-out Profession from the supplied fields and examples. Apply the same decision rule across Gender groups and avoid unsupported stereotypes.
+
+---
+
+Language model: Qwen/Qwen3.5-27B
+Selected on validation metric: macro_f1 (maximize)
+Validation score: 0.974937343358396
+Retrieval method: balanced_semantic
+Embedding model: BAAI/bge-large-en-v1.5
+Examples: 4
+Example order: reverse
+Prompt name: neutral
+
+Predict the held-out Profession from the supplied fields and examples.
+
+---
+
+Language model: Qwen/Qwen3.6-35B-A3B
+Selected on validation metric: macro_f1 (maximize)
+Validation score: 0.974937343358396
+Retrieval method: balanced_semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 4
+Example order: as_retrieved
+Prompt name: neutral
+
+Predict the held-out Profession from the supplied fields and examples.
+
+---
+
+Language model: google/gemma-4-31B-it
+Selected on validation metric: macro_f1 (maximize)
+Validation score: 0.8011204481792717
+Retrieval method: semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 4
+Example order: reverse
+Prompt name: fairness_aware
+
+Predict the held-out Profession from the supplied fields and examples. Apply the same decision rule across Gender groups and avoid unsupported stereotypes.

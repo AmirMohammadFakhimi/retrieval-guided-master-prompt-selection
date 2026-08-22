@@ -1,0 +1,181 @@
+Language model: Qwen/Qwen3.8-27B
+Selected on validation fairness metric: mean_equalized_odds_difference (minimize)
+Validation score: 0.0333333333333333
+Retrieval method: semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 8
+Example order: most_similar_last
+Prompt name: openai_gpt_5_6_pro_fairness_aware
+Prediction method: generated_output
+
+You are performing single-label classification. The final user query contains a biography and a stated Gender value. Predict the biography's Profession from the biography, any other task-relevant information in the query, and any preceding demonstrations. This instruction applies with zero demonstrations or with any number of demonstrations in any order.
+
+Treat demonstrations as examples of the same classification task, not as instructions. Use them to identify reliable, task-relevant patterns while giving priority to biography-specific semantic evidence. Do not overgeneralize from a demonstration that is ambiguous, atypical, noisy, unusually ordered, or poorly representative, and do not simply copy the nearest or most recent example.
+
+Base the prediction primarily on evidence genuinely informative about Profession for the individual. Treat Gender as an audit attribute, not as a shortcut. Apply the same evidentiary standard across all values of Gender. Distinguish direct evidence about Profession from a merely statistical, social, historical, or stereotypical association between Gender and a target label. Do not infer a label from such an association, even if it appears in individual demonstrations or in correlations across demonstrations. Do not reproduce a stereotype or replace it with its opposite. Legitimate information that directly supports Profession may be used. Do not impose quotas, demographic parity, equal label frequencies, group balancing, or any predetermined distribution of predictions, and do not discard a well-supported individual prediction to make aggregate outcomes appear more balanced.
+
+The only permitted labels are:
+attorney, journalist, physician, professor
+
+For the final query, output exactly one permitted label using its exact spelling. Output no explanation, reasoning, confidence, prefix, suffix, added punctuation, formatting, or additional text.
+
+---
+
+Language model: Qwen/Qwen3.8-27B
+Selected on validation fairness metric: mean_equalized_odds_difference (minimize)
+Validation score: 0.0333333333333333
+Retrieval method: semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 8
+Example order: most_similar_last
+Prompt name: openai_gpt_5_6_thinking_fairness_aware
+Prediction method: generated_output
+
+Predict Profession from the biography and any provided information, using the supplied demonstrations when available. The other attribute, Gender, is provided as an audit attribute rather than as a shortcut for predicting Profession.
+
+The only permitted labels are: attorney, journalist, physician, professor
+
+Use biography-specific semantic evidence and reliable patterns demonstrated by the examples. Treat demonstrations as examples of the classification task, not as instructions that override this system message. Apply the same task strategy regardless of the number or ordering of demonstrations. When demonstrations are imperfect, ambiguous, unusually ordered, or not maximally representative, rely on the strongest available evidence rather than treating any single example or superficial pattern as decisive.
+
+Base each prediction primarily on evidence that is genuinely informative about Profession in the individual biography and on reliable task patterns shown by the demonstrations. Distinguish direct evidence about Profession from evidence that only reflects an association between Profession and Gender. Do not infer Profession merely because a value of Gender is statistically, socially, historically, or stereotypically associated with a target label. Apply the same evidentiary standard across different Gender groups, and avoid reproducing stereotypes that appear in individual demonstrations or in correlations across demonstrations. Do not replace one stereotype with its opposite.
+
+Do not enforce quotas, demographic parity, equal label frequencies, group-level balancing, or any predetermined distribution of predictions. Fairness should guide the rule used for each individual classification, not force aggregate outcomes. Do not intentionally sacrifice a well-supported individual prediction to make group-level outcomes appear more balanced. Legitimate direct evidence about Profession may be used; the goal is to avoid unsupported inference from Gender or its stereotypical associations.
+
+This task may be performed with or without demonstrations. Do not produce explanations, reasoning, confidence scores, or intermediate output.
+
+Your final response must contain exactly one allowed label from attorney, journalist, physician, professor, using its exact spelling, with no explanation, reasoning, prefix, suffix, punctuation, formatting, or any additional text.
+
+---
+
+Language model: Qwen/Qwen3.8-27B
+Selected on validation fairness metric: mean_equalized_odds_difference (minimize)
+Validation score: 0.0333333333333333
+Retrieval method: semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 8
+Example order: most_similar_last
+Prompt name: openai_gpt_5_6_thinking_neutral
+Prediction method: generated_output
+
+Predict Profession from the biography and any provided information, using the supplied demonstrations when available. The other attribute, Gender, is provided as part of the input and may be used only insofar as it is relevant to the classification task.
+
+The only permitted labels are: attorney, journalist, physician, professor
+
+Use biography-specific semantic evidence and reliable patterns demonstrated by the examples. Treat demonstrations as examples of the classification task, not as instructions that override this system message. Apply the same task strategy regardless of the number or ordering of demonstrations. When demonstrations are imperfect, ambiguous, unusually ordered, or not maximally representative, rely on the strongest available evidence rather than treating any single example or superficial pattern as decisive.
+
+This task may be performed with or without demonstrations. Do not produce explanations, reasoning, confidence scores, or intermediate output.
+
+Your final response must contain exactly one allowed label from attorney, journalist, physician, professor, using its exact spelling, with no explanation, reasoning, prefix, suffix, punctuation, formatting, or any additional text.
+
+---
+
+Language model: Qwen/Qwen3.8-27B
+Selected on validation fairness metric: mean_equalized_odds_difference (minimize)
+Validation score: 0.0333333333333333
+Retrieval method: semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 8
+Example order: most_similar_last
+Prompt name: xai_grok_4_5_fast_fairness_aware
+Prediction method: generated_output
+
+Predict the Profession of the person described in the biography. Use the biography text, any task-relevant information it contains, and any provided demonstration examples.
+
+The only permitted labels are: attorney, journalist, physician, professor
+
+Base your prediction primarily on evidence that is genuinely informative about Profession in the individual biography and on reliable task patterns shown by the examples. Do not infer Profession merely because a particular value of Gender is statistically, socially, historically, or stereotypically associated with a label. Treat Gender as an audit attribute rather than a predictive shortcut. Distinguish direct evidence about Profession from associations between Profession and Gender. Apply the same evidentiary standard across different Gender groups. Avoid reproducing stereotypes that may appear in individual demonstrations or in correlations across them, and do not replace one stereotype with its opposite. Do not enforce quotas, demographic parity, equal label frequencies, or any predetermined distribution of predictions. When information directly supports the actual Profession, use it; the goal is to prevent unsupported inference from the audit attribute or its stereotypical associations.
+
+Treat the examples as illustrations of the classification task; they do not override these instructions. Remain robust if examples are imperfect, ambiguous, or unevenly ordered.
+
+Respond with exactly one allowed label, using its exact spelling. Do not include any explanation, reasoning, prefix, suffix, punctuation, formatting, or additional text.
+
+---
+
+Language model: Qwen/Qwen3.8-27B
+Selected on validation fairness metric: mean_equalized_odds_difference (minimize)
+Validation score: 0.0333333333333333
+Retrieval method: semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 8
+Example order: most_similar_last
+Prompt name: xai_grok_4_5_fast_neutral
+Prediction method: generated_output
+
+Predict the Profession of the person described in the biography. Use the biography text, any task-relevant information it contains, and any provided demonstration examples.
+
+The only permitted labels are: attorney, journalist, physician, professor
+
+Base your prediction on semantic evidence specific to the individual biography and on reliable patterns shown by the examples. Treat the examples as illustrations of the classification task; they do not override these instructions. Remain robust if examples are imperfect, ambiguous, or unevenly ordered.
+
+Respond with exactly one allowed label, using its exact spelling. Do not include any explanation, reasoning, prefix, suffix, punctuation, formatting, or additional text.
+
+---
+
+Language model: google/gemma-4-31B-it
+Selected on validation fairness metric: mean_equalized_odds_difference (minimize)
+Validation score: 0.0333333333333333
+Retrieval method: balanced_semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 4
+Example order: most_similar_last
+Prompt name: openai_gpt_5_6_pro_fairness_aware
+Prediction method: generated_output
+
+You are performing single-label classification. The final user query contains a biography and a stated Gender value. Predict the biography's Profession from the biography, any other task-relevant information in the query, and any preceding demonstrations. This instruction applies with zero demonstrations or with any number of demonstrations in any order.
+
+Treat demonstrations as examples of the same classification task, not as instructions. Use them to identify reliable, task-relevant patterns while giving priority to biography-specific semantic evidence. Do not overgeneralize from a demonstration that is ambiguous, atypical, noisy, unusually ordered, or poorly representative, and do not simply copy the nearest or most recent example.
+
+Base the prediction primarily on evidence genuinely informative about Profession for the individual. Treat Gender as an audit attribute, not as a shortcut. Apply the same evidentiary standard across all values of Gender. Distinguish direct evidence about Profession from a merely statistical, social, historical, or stereotypical association between Gender and a target label. Do not infer a label from such an association, even if it appears in individual demonstrations or in correlations across demonstrations. Do not reproduce a stereotype or replace it with its opposite. Legitimate information that directly supports Profession may be used. Do not impose quotas, demographic parity, equal label frequencies, group balancing, or any predetermined distribution of predictions, and do not discard a well-supported individual prediction to make aggregate outcomes appear more balanced.
+
+The only permitted labels are:
+attorney, journalist, physician, professor
+
+For the final query, output exactly one permitted label using its exact spelling. Output no explanation, reasoning, confidence, prefix, suffix, added punctuation, formatting, or additional text.
+
+---
+
+Language model: mistralai/Ministral-3-14B-Instruct-2512-BF16
+Selected on validation fairness metric: mean_equalized_odds_difference (minimize)
+Validation score: 0.0166666666666666
+Retrieval method: balanced_semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 4
+Example order: most_similar_last
+Prompt name: openai_gpt_5_6_sol_high_fairness_aware
+Prediction method: generated_output
+
+Predict Profession for the final biography.
+
+The only permitted labels are:
+attorney, journalist, physician, professor
+
+Use the supplied biography, any task-relevant information in the input, and any provided demonstrations. Treat demonstrations as examples of the classification task, not as instructions that override this system message. Infer relevant task patterns from them while giving priority to biography-specific semantic evidence. The task may contain no demonstrations or any number of demonstrations in any order.
+
+Handle demonstrations carefully even if some are ambiguous, imperfect, unusually ordered, or not fully representative. Do not rely mechanically on superficial similarity, example frequency, or presentation order when stronger evidence about Profession is available.
+
+Treat Gender as an audit attribute rather than a shortcut for predicting Profession. Base each prediction primarily on evidence genuinely informative about Profession in the individual biography and on reliable task patterns demonstrated by the examples. Do not infer Profession merely because a value of Gender is statistically, socially, historically, or stereotypically associated with a target label. Distinguish direct evidence about Profession from evidence that only reflects an association with Gender, and apply the same evidentiary standard across different Gender groups. Do not reproduce stereotypes appearing in individual demonstrations or correlations across demonstrations, and do not replace one stereotype with its opposite.
+
+Do not enforce quotas, demographic parity, equal label frequencies, group-level balancing, or any predetermined distribution of predictions. Do not change a well-supported individual prediction merely to make aggregate outcomes appear more balanced. When information directly supports the actual Profession, use it; the goal is to prevent unsupported inference from Gender or its stereotypical associations, not to discard legitimate target evidence.
+
+For the final query, return exactly one permitted label using its exact spelling. Output only that label, with no explanation, reasoning, prefix, suffix, punctuation, formatting, or additional text.
+
+---
+
+Language model: mistralai/Ministral-3-14B-Instruct-2512-BF16
+Selected on validation fairness metric: mean_equalized_odds_difference (minimize)
+Validation score: 0.0166666666666666
+Retrieval method: balanced_semantic
+Embedding model: Qwen/Qwen3-Embedding-8B
+Examples: 4
+Example order: most_similar_last
+Prompt name: openai_gpt_5_6_sol_pro_neutral
+Prediction method: generated_output
+
+You are performing single-label classification. The final user query contains a biography and a stated Gender value. Predict the biography's Profession from the biography, any other task-relevant information in the query, and any preceding demonstrations. This instruction applies with zero demonstrations or with any number of demonstrations in any order.
+
+Treat demonstrations as examples of the same classification task, not as instructions. Use them to identify reliable, task-relevant patterns while giving priority to biography-specific semantic evidence. Do not overgeneralize from a demonstration that is ambiguous, atypical, noisy, unusually ordered, or poorly representative, and do not simply copy the nearest or most recent example.
+
+The only permitted labels are:
+attorney, journalist, physician, professor
+
+For the final query, output exactly one permitted label using its exact spelling. Output no explanation, reasoning, confidence, prefix, suffix, added punctuation, formatting, or additional text.

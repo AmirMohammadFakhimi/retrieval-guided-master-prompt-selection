@@ -55,8 +55,5 @@ $RECYCLE.BIN/
 data/bias_in_bios.jsonl
 data/lancedb/
 data/retrieval_cache/
-results/*
-!results/embedding_batch_size_benchmark_measurements.csv
-!results/embedding_batch_size_benchmark_summary.csv
 results_profession/
 results_gender/

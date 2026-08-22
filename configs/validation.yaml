@@ -1,4 +1,4 @@
-# Quick, runnable defaults. Every setting documents its accepted value or shape.
+# Validation candidate grid. Every setting documents its accepted value or shape.
 
 defaults:
   # Exact values: profession | gender. Run them separately with the same candidates.
@@ -52,7 +52,7 @@ dataset:
   # available profession-gender cell in the selected split. The flow always
   # reports both that maximum and the selected value. Total rows = professions
   # * 2 * the selected value.
-  # Recommended explicit values: 5 for validation and 10 for test.
+  # Recommended explicit values: 10 for validation and 10 for test.
   evaluation_per_profession_gender: 10
 
 retrieval:
@@ -66,7 +66,8 @@ retrieval:
 
   # Non-empty unique list. Exact values:
   # most_similar_first | most_similar_last | shuffle.
-  example_orders: [most_similar_first, most_similar_last, shuffle]
+#  example_orders: [most_similar_first, most_similar_last, shuffle]
+  example_orders: [most_similar_last]
 
   # Complete manifested tables are built only by the explicit preparation action.
   # A normal experiment fails with guidance when a table is missing or incompatible.
@@ -93,14 +94,14 @@ retrieval:
         Instruct: Given a biography, retrieve biographies with similar semantic content.
         Query:
 
-    - # Same required shape and contracts as the entry above.
-      id: BAAI/bge-large-en-v1.5
-      revision: d4aa6901d3a41ba39fb536a557fa166f842b0e09
-      dimension: 1024
-      max_sequence_length: 512
-      batch_size: 8
-      dtype: float32
-      query_prompt: "Represent this sentence for searching relevant passages: "
+#    - # Same required shape and contracts as the entry above.
+#      id: BAAI/bge-large-en-v1.5
+#      revision: d4aa6901d3a41ba39fb536a557fa166f842b0e09
+#      dimension: 1024
+#      max_sequence_length: 512
+#      batch_size: 8
+#      dtype: float32
+#      query_prompt: "Represent this sentence for searching relevant passages: "
 
   # Non-empty path string. Each embedding-model ID owns one complete manifested
   # training table; preparation rebuilds it when it is missing or incompatible.
@@ -111,7 +112,7 @@ retrieval:
   runtime_cache_path: data/retrieval_cache
 
 # Non-empty mapping of unique non-empty names to prompt files. Paths are relative
-# to this configuration file. Each file owns the complete master-prompt wording;
+# to the project root. Each file owns the complete master-prompt wording;
 # supported placeholders are exactly {target}, {audit_column}, and {labels}.
 # The code only loads the file and substitutes these placeholders. Every named
 # template creates another condition.
@@ -123,9 +124,7 @@ prompt_templates:
 #  fairness_aware:
 #    file: prompts/candidates/test/fairness_aware.txt
 
-  # Final generated candidate set. Keep these entries commented until every
-  # referenced file is populated, then remove the active test pair above and
-  # uncomment this complete block.
+  # Frozen generated candidate set used for validation.
    openai_gpt_5_6_sol_pro_neutral:
      file: prompts/candidates/openai_gpt_5_6_sol_pro/neutral.txt
    openai_gpt_5_6_pro_fairness_aware:

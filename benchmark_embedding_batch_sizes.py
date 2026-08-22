@@ -18,7 +18,10 @@ STEPS_BY_MODEL = {
 
 def main() -> None:
     project_root = Path(__file__).resolve().parent
-    config = configuration.load_config(project_root / 'config.yaml')
+    config = configuration.load_config(
+        project_root / 'configs' / 'validation.yaml',
+        project_root,
+    )
     device = modeling.choose_device(config['inference']['device'])
 
     source_rows = dataset.load_source_rows(config, project_root)

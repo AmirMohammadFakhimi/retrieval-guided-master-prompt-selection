@@ -52,14 +52,14 @@ def resolve_prompt_templates(
 
         relative_path = Path(_require_non_empty_string(source['file'], f'{setting}.file'))
         if relative_path.is_absolute():
-            raise ValueError(f'{setting}.file must be relative to the configuration directory')
+            raise ValueError(f'{setting}.file must be relative to the configuration base directory')
 
         prompt_path = (root / relative_path).resolve()
         try:
             prompt_path.relative_to(root)
         except ValueError as exc:
             raise ValueError(
-                f'{setting}.file must stay within the configuration directory'
+                f'{setting}.file must stay within the configuration base directory'
             ) from exc
         if not prompt_path.is_file():
             raise ValueError(f'{setting}.file does not exist: {relative_path}')
@@ -72,16 +72,19 @@ def resolve_prompt_templates(
 
 
 def load_config_text(text: str, base_directory: str | Path) -> dict[str, Any]:
-    """Load YAML text and resolve prompt files relative to its configuration directory."""
+    """Load YAML text and resolve prompt files relative to a base directory."""
 
     config = yaml.safe_load(text)
     return resolve_prompt_templates(config, base_directory)
 
 
-def load_config(path: Path) -> dict[str, Any]:
-    """Load a YAML configuration file and its referenced prompt files."""
+def load_config(
+        path: Path,
+        base_directory: str | Path,
+) -> dict[str, Any]:
+    """Load a YAML configuration and resolve prompt files from the requested base."""
 
-    return load_config_text(path.read_text(encoding='utf-8'), path.parent)
+    return load_config_text(path.read_text(encoding='utf-8'), base_directory)
 
 
 def _require_integer(value: Any, setting: str, minimum: int) -> int:

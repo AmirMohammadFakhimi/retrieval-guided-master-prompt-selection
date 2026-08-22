@@ -11,7 +11,7 @@ from pipeline import discard_incomplete_run, prepare_embedding_cache, run_experi
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = PROJECT_ROOT / 'config.yaml'
+CONFIG_PATH = PROJECT_ROOT / 'configs' / 'validation.yaml'
 TABLE_PREVIEW_ROWS = 500
 RESULT_TABLE_NAMES = (
     'predictions',

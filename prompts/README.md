@@ -2,7 +2,7 @@
 
 `candidate_generation_prompt.txt` is the single frozen instruction given unchanged to every
 closed-source generator. It is not a downstream master-prompt candidate and must not be listed
-in `config.yaml`.
+in `configs/validation.yaml`.
 
 Each generator directory under `candidates/` owns one matched pair:
 
@@ -11,7 +11,8 @@ Each generator directory under `candidates/` owns one matched pair:
 
 Copy only the text inside the generator's two requested code blocks into those files. Do not add
 the section headings or Markdown fences, and do not rewrite one candidate after generation. Add a
-pair to `config.yaml` only after both files are non-empty and pass configuration validation.
+pair to `configs/validation.yaml` only after both files are non-empty and pass configuration
+validation.
 
 The current generator set is:
 
@@ -34,10 +35,10 @@ candidate set before evaluating it on the validation split. Compare neutral vers
 within the same generator pair; let all candidates compete as master prompts, with a separate
 winner selected for each downstream language model.
 
-The `test/` pair contains only the original quick-run prompts. It keeps the checked-in configuration
-runnable while the generated candidate files are empty and is not part of the final candidate set.
+The `test/` pair contains only the original quick-run prompts. It is retained as test material and
+is not part of the frozen validation candidate set.
 
-Source `config.yaml` entries reference prompt files:
+Source configuration entries reference prompt files:
 
 ```yaml
 prompt_templates:
@@ -47,6 +48,6 @@ prompt_templates:
     file: prompts/candidates/openai_gpt_5_6_sol_high/fairness_aware.txt
 ```
 
-Paths are resolved relative to `config.yaml`. The in-memory configuration and each run's
+Paths are resolved relative to the project root. The in-memory configuration and each run's
 `config_used.yaml` contain the resolved text, so run artifacts remain self-contained if a source
 file changes later.

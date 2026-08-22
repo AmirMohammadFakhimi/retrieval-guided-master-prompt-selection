@@ -9,6 +9,12 @@ prompt conditions on exactly one configured Bias-in-Bios split. Use
 to `test` only when you want a test run. Profession and gender remain separate
 runs with the same prompt candidates and separate winners.
 
+`configs/validation.yaml` contains the complete validation candidate grid.
+Each file under `configs/test/` freezes one downstream language model and its
+own validation-selected prompt, retrieval settings, and example count. This
+keeps final test evaluation from recombining the three models' different
+winners into a new condition grid.
+
 ## Inference
 
 The pipeline uses Hugging Face Transformers directly and loads language models
@@ -42,10 +48,14 @@ conditions.
 `inference.generation_batch_size` is a positive run-wide performance setting
 used only by `generated_output`. It batches rows within each condition; larger
 values reduce generation calls but require more accelerator memory. The
-checked-in value is 2, and 1 disables batching.
+checked-in value is 1, which disables batching.
 
 ## Structure
 
+- `configs/validation.yaml`: complete candidate grid for model-specific winner
+  selection on validation;
+- `configs/test/`: one frozen, single-condition test configuration per language
+  model;
 - `configuration.py`: YAML loading and static configuration validation;
 - `prompts/`: the frozen candidate-generation instruction, generated candidate
   pairs, and prompt-generation protocol;
@@ -146,6 +156,10 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
+The app and notebook default to `configs/validation.yaml`. To run one frozen
+test condition in the notebook, change its visible `CONFIG_PATH` value to the
+corresponding file under `configs/test/` before loading the configuration.
+
 Before a run containing positive example counts, select **Prepare all training
 embeddings**. When a language model CSV is missing, **Run configured split**
 reuses or creates the query-vector NPZ files and computes every exact retrieval
@@ -204,7 +218,8 @@ To benchmark the step-7 embedding batch size separately, run:
 python benchmark_embedding_batch_sizes.py
 ```
 
-It tests batch sizes 1 through 256 by powers of two. Qwen uses two 2,048-row
+The benchmark reads embedding settings from `configs/validation.yaml`. It tests
+batch sizes 1 through 256 by powers of two. Qwen uses two 2,048-row
 steps and BGE uses five. It times only embedding, prints the aggregate speed
 for each batch size, and stores every step in
 `results/embedding_batch_size_benchmark_measurements.csv`. The corresponding
@@ -519,6 +534,6 @@ experiments with the same prompt candidates and separate winners.
 For $P$ master prompts, $R$ retrieval methods, $E$ embedding models, $O$
 example orders, and $K_+$ positive example counts, conditions per language
 model equal $P\left(\mathbf{1}[0\text{ configured}]+R E O K_+\right)$. The
-checked-in configuration therefore has 50 conditions per language model and
-150 total. Its four professions, two genders, and five evaluation rows per
-cell produce 40 evaluation rows and 6,000 row-condition predictions.
+validation configuration therefore has 60 conditions per language model and
+180 total. Its four professions, two genders, and ten evaluation rows per cell
+produce 80 evaluation rows and 14,400 row-condition predictions.

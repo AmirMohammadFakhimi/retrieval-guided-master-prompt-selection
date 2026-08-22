@@ -1,0 +1,49 @@
+# Frozen from results/validation-run-20260822-150124-751229.
+# Selected by validation macro_f1 (maximize): 0.975275.
+
+defaults:
+  target: profession
+  evaluation_split: test
+  seed: 42
+  output_dir: results/test/qwen3.8-27b
+  ranking_metric: macro_f1
+  ranking_direction: maximize
+
+dataset:
+  file: data/bias_in_bios.jsonl
+  hub_id: LabHC/bias_in_bios
+  revision: 052f01de644dba841176e0449528b41f27d94a61
+  professions: [attorney, journalist, physician, professor]
+  shuffle_seed: 42
+  train_size: all
+  evaluation_per_profession_gender: 10
+
+retrieval:
+  methods: [semantic]
+  example_counts: [8]
+  example_orders: [most_similar_last]
+  embedding_models:
+    - id: Qwen/Qwen3-Embedding-8B
+      revision: 1d8ad4ca9b3dd8059ad90a75d4983776a23d44af
+      dimension: 4096
+      max_sequence_length: 1024
+      batch_size: 4
+      dtype: bfloat16
+      query_prompt: |-
+        Instruct: Given a biography, retrieve biographies with similar semantic content.
+        Query:
+  lancedb_path: data/lancedb
+  runtime_cache_path: data/retrieval_cache
+
+prompt_templates:
+  openai_gpt_5_6_sol_high_neutral:
+    file: prompts/candidates/openai_gpt_5_6_sol_high/neutral.txt
+
+inference:
+  prediction_method: generated_output
+  generation_batch_size: 1
+  language_models:
+    - id: Qwen/Qwen3.8-27B
+      revision: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+      dtype: bfloat16
+  device: mps
